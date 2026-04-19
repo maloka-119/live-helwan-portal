@@ -1,0 +1,23 @@
+{
+  "files": {
+    "main.css": "/static/css/main.c6c86065.css",
+    "main.js": "/static/js/main.29418eee.js",
+    "static/js/453.210d099e.chunk.js": "/static/js/453.210d099e.chunk.js",
+    "static/media/Newbg.jpg": "/static/media/Newbg.f5c2878acd2718a95726.jpg",
+    "static/media/smallbg.jpg": "/static/media/smallbg.9d6d0182bb072a35de86.jpg",
+    "static/media/Unibackgroundcr.jpeg": "/static/media/Unibackgroundcr.64e34cd0bf331462e32d.jpeg",
+    "static/media/helwan-img.jpg": "/static/media/helwan-img.433356c168c0be752ad8.jpg",
+    "static/media/capital-uni-logo.png": "/static/media/capital-uni-logo.7f006d03aefc6502fa3c.png",
+    "static/media/Unibackground.jpeg": "/static/media/Unibackground.014149517506b2259527.jpeg",
+    "static/media/AdminPosts.jpeg": "/static/media/AdminPosts.8c78e7f462d0752f768d.jpeg",
+    "static/media/logo-white-deskt-min.png": "/static/media/logo-white-deskt-min.3325afab2ff653c46dbc.png",
+    "index.html": "/index.html",
+    "main.c6c86065.css.map": "/static/css/main.c6c86065.css.map",
+    "main.29418eee.js.map": "/static/js/main.29418eee.js.map",
+    "453.210d099e.chunk.js.map": "/static/js/453.210d099e.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.c6c86065.css",
+    "static/js/main.29418eee.js"
+  ]
+}
