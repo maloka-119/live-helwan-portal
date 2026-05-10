@@ -46,7 +46,7 @@ router.post(
 // تسجيل الدخول
 router.post(
   "/login",
-  // authLimiter,
+  authLimiter,
   validateRequest(loginSchema),
   loginUser
 );

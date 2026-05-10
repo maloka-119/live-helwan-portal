@@ -64,6 +64,116 @@ function extractDOBFromEgyptianNID(nid) {
   )}`;
 }
 
+function extractGraduateApiData(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const candidates = [
+    payload,
+    payload.data,
+    payload.result,
+    payload.student,
+    payload.graduate,
+    payload.payload,
+  ].filter(Boolean);
+
+  for (const item of candidates) {
+    if (
+      item?.faculty ||
+      item?.Faculty ||
+      item?.FACULTY ||
+      item?.facultyName ||
+      item?.graduationYear ||
+      item?.["graduation-year"]
+    ) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+function hasGraduatePresence(payload) {
+  if (!payload || typeof payload !== "object") return false;
+
+  const candidates = [
+    payload,
+    payload.data,
+    payload.result,
+    payload.student,
+    payload.graduate,
+    payload.payload,
+  ].filter(Boolean);
+
+  return candidates.some(
+    (item) =>
+      item?.exists === true ||
+      item?.found === true ||
+      item?.isFound === true ||
+      item?.isExists === true ||
+      item?.matched === true
+  );
+}
+
+function buildGraduateApiUrls(nationalId) {
+  const encodedNationalId = encodeURIComponent(nationalId);
+  const baseUrl = (process.env.GRADUATE_API_URL || "").replace(/\/+$/, "");
+  const urls = [];
+
+  if (baseUrl) {
+    urls.push(`${baseUrl}?nationalId=${encodedNationalId}`);
+
+    if (/\/check$/i.test(baseUrl)) {
+      urls.push(
+        `${baseUrl.replace(/\/check$/i, `/details/${encodedNationalId}`)}`
+      );
+    }
+
+    if (/\/graduates\/check$/i.test(baseUrl)) {
+      urls.push(
+        `${baseUrl.replace(
+          /\/graduates\/check$/i,
+          `/details/${encodedNationalId}`
+        )}`
+      );
+      urls.push(
+        `${baseUrl.replace(
+          /\/graduates\/check$/i,
+          `/graduates/details/${encodedNationalId}`
+        )}`
+      );
+    }
+  }
+
+  urls.push(`http://localhost:5155/api/details/${encodedNationalId}`);
+  urls.push(`http://localhost:5155/api/graduates/details/${encodedNationalId}`);
+
+  return [...new Set(urls)];
+}
+
+async function resolveGraduateFromExternalApi(nationalId) {
+  for (const url of buildGraduateApiUrls(nationalId)) {
+    try {
+      const response = await axios.get(url, {
+        timeout: 8000,
+        headers: { Accept: "application/json" },
+      });
+
+      const data = extractGraduateApiData(response.data);
+      if (data) {
+        return { found: true, data };
+      }
+
+      if (hasGraduatePresence(response.data)) {
+        return { found: true, data: response.data || {} };
+      }
+    } catch (error) {
+      // Try the next candidate URL.
+    }
+  }
+
+  return { found: false, data: null };
+}
+
 /**
  * Check if National ID is already registered
  * @param {string} nid - Egyptian National ID
@@ -198,28 +308,23 @@ const registerUser = asyncHandler(async (req, res) => {
     console.log("Staff API check failed:", e.message);
   }
 
-  // --- Graduate check ---
+  // --- Graduate check (✅ FIXED) ---
   if (userType === "graduate") {
     try {
-      const gradResp = await axios.get(
-        `${process.env.GRADUATE_API_URL}?nationalId=${encodeURIComponent(
-          nationalId
-        )}`,
-        { timeout: 8000 }
-      );
+      const externalGraduate = await resolveGraduateFromExternalApi(nationalId);
 
-      if (gradResp.data?.faculty) {
+      if (externalGraduate.found) {
         // موجود في system2 → accepted
         statusToLogin = "accepted";
-        externalData = gradResp.data;
+        externalData = externalGraduate.data || {};
       } else {
-        // مش موجود → نعتبره accepted تلقائياً
-        statusToLogin = "accepted";
+        // ❗ مش موجود → pending (بدل accepted)
+        statusToLogin = "pending";
       }
     } catch (e) {
       console.log("Graduate API check failed:", e.message);
-      // لو API رجع error → نعتبر المستخدم accepted
-      statusToLogin = "accepted";
+      // ❗ لو API وقع → pending (بدل accepted)
+      statusToLogin = "pending";
     }
   }
 
@@ -358,7 +463,11 @@ const loginUser = asyncHandler(async (req, res) => {
       console.log(`      - Current skills: ${graduate.skills || "missing"}`);
 
       // لو الفاكولتي أو سنة التخرج ناقصة
-      if (!graduate.faculty_code || !graduate["graduation-year"]) {
+      if (
+        !graduate.faculty_code ||
+        !graduate["graduation-year"] ||
+        graduate["status-to-login"] !== "accepted"
+      ) {
         console.log(
           "   - ⚠️ Missing faculty or graduation year, fetching from external system..."
         );
@@ -396,16 +505,12 @@ const loginUser = asyncHandler(async (req, res) => {
         if (nationalId) {
           try {
             // ✅ التعديل هنا: غيرنا الرابط
-            const externalApiUrl = `http://localhost:5155/api/details/${nationalId}`;
-            console.log(`   - Calling external API: ${externalApiUrl}`);
+            const externalGraduate = await resolveGraduateFromExternalApi(
+              nationalId
+            );
 
-            const externalResponse = await axios.get(externalApiUrl, {
-              timeout: 5000,
-              headers: { Accept: "application/json" },
-            });
-
-            if (externalResponse.data) {
-              const externalData = externalResponse.data;
+            if (externalGraduate.found && externalGraduate.data) {
+              const externalData = externalGraduate.data;
               console.log("   - ✅ External data received:");
               console.log(`      - Full Name: ${externalData.fullName}`);
               console.log(`      - Faculty: ${externalData.faculty}`);
@@ -455,6 +560,12 @@ const loginUser = asyncHandler(async (req, res) => {
                 console.log(
                   `      - ✅ Updated skills/department to: ${externalData.department}`
                 );
+                updated = true;
+              }
+
+              if (graduate["status-to-login"] !== "accepted") {
+                graduate["status-to-login"] = "accepted";
+                console.log("      - âœ… Updated status-to-login to accepted");
                 updated = true;
               }
 

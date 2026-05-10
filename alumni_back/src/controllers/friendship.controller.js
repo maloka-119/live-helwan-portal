@@ -160,15 +160,20 @@ const sendRequest = async (req, res) => {
     // Create notification for the receiver
     await notifyUserAdded(receiverId, senderId);
 
-    // Log successful request
-    logger.info("Friend request sent successfully", {
-      senderId,
-      receiverId,
-      requestId: request.id,
-      receiverName: `${receiverGraduate.User["first-name"]} ${receiverGraduate.User["last-name"]}`,
-      ip: req.ip,
-      timestamp: new Date().toISOString(),
-    });
+    // Emit live socket event
+    if (global.chatSocket) {
+      const senderGraduate = await Graduate.findOne({
+        where: { graduate_id: senderId },
+        include: [{ model: User, attributes: ["first-name", "last-name"] }],
+      });
+
+      global.chatSocket.emitFriendRequest(receiverId, {
+        id: request.id,
+        senderId: senderId,
+        userName: `${senderGraduate.User["first-name"]} ${senderGraduate.User["last-name"]}`,
+        image: senderGraduate["profile-picture-url"] || null,
+      });
+    }
 
     res.json({
       message: "Request sent successfully",
@@ -238,6 +243,11 @@ const cancelRequest = async (req, res) => {
         ip: req.ip,
         timestamp: new Date().toISOString(),
       });
+
+      // Emit live socket event
+      if (global.chatSocket) {
+        global.chatSocket.emitFriendRequestCancelled(receiverId, senderId);
+      }
     } else {
       logger.warn("No pending friend request found to cancel", {
         senderId,
@@ -403,15 +413,18 @@ const confirmRequest = async (req, res) => {
     // Create notification for the sender (who sent the original request)
     await notifyRequestAccepted(senderId, receiverId);
 
-    // Log successful confirmation
-    logger.info("Friend request confirmed successfully", {
-      senderId,
-      receiverId,
-      requestId: request.id,
-      senderName: `${senderGraduate.User["first-name"]} ${senderGraduate.User["last-name"]}`,
-      ip: req.ip,
-      timestamp: new Date().toISOString(),
-    });
+    // Emit live socket event to the sender
+    if (global.chatSocket) {
+      const receiverUser = await User.findByPk(receiverId);
+      const receiverGrad = await Graduate.findByPk(receiverId);
+      
+      global.chatSocket.emitFriendRequestAccepted(senderId, {
+        id: receiverId,
+        friendId: receiverId,
+        name: `${receiverUser["first-name"]} ${receiverUser["last-name"]}`,
+        image: receiverGrad["profile-picture-url"] || null,
+      });
+    }
 
     res.json({
       message: "Friend request accepted",
@@ -635,6 +648,11 @@ const deleteFriend = async (req, res) => {
         ip: req.ip,
         timestamp: new Date().toISOString(),
       });
+
+      // Emit live socket event
+      if (global.chatSocket) {
+        global.chatSocket.emitUnfriend(friendId, userId);
+      }
     } else {
       logger.warn("No friendship found to delete", {
         userId,

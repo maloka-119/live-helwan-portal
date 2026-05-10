@@ -16,7 +16,7 @@ const {
 } = require("../services/notificationService");
 const checkStaffPermission = require("../utils/permissionChecker");
 const aes = require("../utils/aes");
-
+const { decryptNationalId } = require("../utils/aes"); 
 /**
  * Create a new document request (Graduates only)
  * @route POST /api/documents/requests
@@ -838,15 +838,12 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
   const user = req.user;
   const { status, graduate_id, page = 1, limit = 20 } = req.query;
 
-  console.log(
-    "\n================ GET ALL DOCUMENT REQUESTS DEBUG ================"
-  );
+  console.log("\n================ GET ALL DOCUMENT REQUESTS DEBUG ================");
   console.log("User ID:", user.id);
   console.log("User Type:", user["user-type"]);
 
   // 1️⃣ Authorization
   if (!["staff", "admin"].includes(user["user-type"])) {
-    console.log("Unauthorized user type");
     return res.status(403).json({
       success: false,
       message: "Only staff and admin can view all document requests.",
@@ -855,8 +852,6 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
 
   // 2️⃣ Staff permission check
   if (user["user-type"] === "staff") {
-    console.log("Checking staff permission...");
-
     let hasPermission = false;
 
     try {
@@ -865,22 +860,15 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
         "Document Requests management",
         "view"
       );
-
-      console.log("Permission result:", hasPermission);
-    } catch (permError) {
-      console.log("PERMISSION FUNCTION ERROR");
-      console.log("Message:", permError.message);
-      console.log("Stack:", permError.stack);
-
+    } catch (err) {
       return res.status(500).json({
         success: false,
         message: "Permission check failed",
-        error: permError.message,
+        error: err.message,
       });
     }
 
     if (!hasPermission) {
-      console.log("Staff has no permission");
       return res.status(403).json({
         success: false,
         message: "You don't have permission to view document requests.",
@@ -889,17 +877,11 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
   }
 
   try {
-    console.log("\n--- BUILD WHERE CLAUSE ---");
-
     const whereClause = {};
     if (status) whereClause.status = status;
     if (graduate_id) whereClause.graduate_id = graduate_id;
 
-    console.log("whereClause:", whereClause);
-
     const offset = (parseInt(page) - 1) * parseInt(limit);
-
-    console.log("\n--- DB QUERY START ---");
 
     const { count, rows: requests } = await DocumentRequest.findAndCountAll({
       where: whereClause,
@@ -909,7 +891,13 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
           include: [
             {
               model: User,
-              attributes: ["id", "first-name", "last-name", "email"],
+              attributes: [
+                "id",
+                "first-name",
+                "last-name",
+                "email",
+                "national-id", // ✅ مهم جدًا
+              ],
             },
           ],
         },
@@ -926,11 +914,8 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
       ],
       order: [["created-at", "DESC"]],
       limit: parseInt(limit),
-      offset: offset,
+      offset,
     });
-
-    console.log("DB RESULT COUNT:", count);
-    console.log("ROWS:", requests.length);
 
     const enhancedRequests = requests.map((request) => {
       const requestData = request.toJSON();
@@ -941,6 +926,7 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
 
       return {
         ...requestData,
+
         document_name_ar: docType ? docType.name_ar : "Unknown",
         document_name_en: docType ? docType.name_en : "Unknown",
 
@@ -951,25 +937,26 @@ const getAllDocumentRequests = asyncHandler(async (req, res) => {
         staff_name: staffUser
           ? `${staffUser["first-name"]} ${staffUser["last-name"]}`
           : null,
+
+        // 🔐 FIXED NATIONAL ID DECRYPT
+        national_id: gradUser?.["national-id"]
+          ? decryptNationalId(gradUser["national-id"])
+          : null,
       };
     });
 
-    console.log("SUCCESS RETURN");
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      count: count,
+      count,
       page: parseInt(page),
       limit: parseInt(limit),
       totalPages: Math.ceil(count / parseInt(limit)),
       data: enhancedRequests,
     });
   } catch (error) {
-    console.log("\nDB OR MAPPING ERROR");
-    console.log("Message:", error.message);
-    console.log("Stack:", error.stack);
+    console.log("DB OR MAPPING ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Error fetching document requests.",
       error: error.message,

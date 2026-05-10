@@ -22,10 +22,8 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
     const user = req.user;
     console.log("🔍 User in reports-stats:", user);
 
-    // 1. تحديد اليوزر types المسموح لهم
     const allowedUserTypes = ["admin", "staff"];
 
-    // 2. لو مش من النوع المسموح → ارفض
     if (!user || !allowedUserTypes.includes(user["user-type"])) {
       return res.status(403).json({
         status: "error",
@@ -33,7 +31,6 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       });
     }
 
-    // 3. لو staff → تحقق من الصلاحية
     if (user["user-type"] === "staff") {
       const hasPermission = await checkStaffPermission(
         user.id,
@@ -50,8 +47,6 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       }
     }
 
-    // 4. لو admin أو staff مع صلاحية → اتركه يكمل
-    // 👩‍🎓 إجمالي وعدد حالات الخريجين
     const totalGraduates = await Graduate.count();
     const activeGraduates = await Graduate.count({
       where: { status: "active" },
@@ -70,7 +65,6 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       where: { "status-to-login": "rejected" },
     });
 
-    // 👨‍🏫 إجمالي وعدد حالات أعضاء هيئة التدريس
     const totalStaff = await Staff.count();
     const activeStaff = await Staff.count({
       where: { "status-to-login": "active" },
@@ -79,7 +73,6 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       where: { "status-to-login": "inactive" },
     });
 
-    // 📢 عدد البوستات من كل نوع مستخدم
     const postsByGraduates = await Post.count({
       include: [
         { model: User, where: { "user-type": "graduate" }, attributes: [] },
@@ -92,7 +85,7 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       ],
     });
 
-    // 🏫 عدد الخريجين في كل كلية - التعديل هنا
+    // 🏫 الكليات (مع حذف null)
     const graduatesByFacultyData = await Graduate.findAll({
       attributes: [
         "faculty_code",
@@ -102,14 +95,15 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       raw: true,
     });
 
-    // تحويل faculty_code إلى اسم الكلية
     const lang = req.headers["accept-language"] || user.language || "ar";
-    const graduatesByFaculty = graduatesByFacultyData.map(item => ({
-      faculty: getCollegeNameByCode(item.faculty_code, lang),
-      count: item.count
-    }));
 
-    // 🧑‍🏫 توزيع أعضاء هيئة التدريس حسب الـ Role
+    const graduatesByFaculty = graduatesByFacultyData
+      .filter(item => item.faculty_code !== null && item.faculty_code !== "")
+      .map(item => ({
+        faculty: getCollegeNameByCode(item.faculty_code, lang),
+        count: item.count,
+      }));
+
     const staffRoles = await StaffRole.findAll({
       include: [{ model: Role, attributes: ["role-name"] }],
       attributes: [
@@ -119,13 +113,11 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
       group: ["role_id", "Role.id"],
     });
 
-    // 📊 نسبة التفاعل العامة
     const totalUsers = totalGraduates + totalStaff;
     const activeUsers = activeGraduates + activeStaff;
     const activePercentage =
       totalUsers > 0 ? ((activeUsers / totalUsers) * 100).toFixed(1) : "0.0";
 
-    // ✅ الإحصائيات النهائية بنفس ترتيب الـ frontend المطلوب
     res.status(200).json({
       status: "success",
       message: "Portal reports fetched successfully",

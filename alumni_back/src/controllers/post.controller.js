@@ -9,7 +9,7 @@ const PostImage = require("../models/PostImage");
 const Staff = require("../models/Staff");
 const Friendship = require("../models/Friendship");
 const checkStaffPermission = require("../utils/permissionChecker");
-
+const { moderateContent } = require("../services/aiModeration");
 const { logger, securityLogger } = require("../utils/logger");
 
 const { Op } = require("sequelize");
@@ -79,10 +79,12 @@ const createPost = async (req, res) => {
 
     const { category, content, groupId, inLanding, type, postAsAdmin } =
       req.body;
+
     const userId = req.user?.id;
 
     if (!req.user) {
       logger.warn("CRITICAL: req.user is UNDEFINED in createPost");
+
       return res.status(403).json({
         status: "fail",
         message: "User not authenticated",
@@ -90,6 +92,7 @@ const createPost = async (req, res) => {
     }
 
     const allowedUserTypes = ["admin", "staff", "graduate"];
+
     const userType = req.user["user-type"];
 
     if (!userId || !allowedUserTypes.includes(userType)) {
@@ -98,6 +101,7 @@ const createPost = async (req, res) => {
         userType: userType,
         allowedTypes: allowedUserTypes,
       });
+
       return res.status(403).json({
         status: "fail",
         message: "Access denied. Invalid user type or missing user ID.",
@@ -119,11 +123,13 @@ const createPost = async (req, res) => {
           requiredPermission: "Community Post's management",
           requiredAction: "add",
         });
+
         return res.status(403).json({
           status: "fail",
           message: "Access denied. You don't have permission to create posts.",
         });
       }
+
       logger.info("Staff permission check passed", { userId });
     }
 
@@ -134,6 +140,7 @@ const createPost = async (req, res) => {
 
       if (!graduate) {
         logger.error("GRADUATE RECORD NOT FOUND in createPost", { userId });
+
         return res.status(404).json({
           status: "fail",
           message: "Graduate record not found",
@@ -146,12 +153,14 @@ const createPost = async (req, res) => {
           currentStatus: graduate.status,
           requiredStatus: "active",
         });
+
         return res.status(403).json({
           status: "fail",
           message:
             "Your account is inactive, Please contact the Alumni Portal Team to activate your profile.",
         });
       }
+
       logger.info("Graduate status check passed", {
         userId,
         status: graduate.status,
@@ -159,8 +168,10 @@ const createPost = async (req, res) => {
     }
 
     const user = await User.findByPk(userId);
+
     if (!user) {
       logger.error("USER NOT FOUND IN DATABASE in createPost", { userId });
+
       return res.status(404).json({
         status: "error",
         message: "User not found",
@@ -168,6 +179,7 @@ const createPost = async (req, res) => {
     }
 
     let authorId = userId;
+
     if (postAsAdmin && user["user-type"] === "staff") {
       const adminUser = await User.findOne({
         where: { "user-type": "admin" },
@@ -176,6 +188,7 @@ const createPost = async (req, res) => {
 
       if (adminUser) {
         authorId = adminUser.id;
+
         logger.info("Staff posting as Admin", {
           staffId: userId,
           adminId: authorId,
@@ -185,25 +198,54 @@ const createPost = async (req, res) => {
       }
     }
 
+    /*
+      =========================
+      AI MODERATION START
+      =========================
+    */
+
+    const moderationResult = await moderateContent(content || "");
+
+    logger.info("AI Moderation Result", {
+      moderationResult,
+    });
+
+    const isHidden = moderationResult === 0;
+
+    /*
+      =========================
+      AI MODERATION END
+      =========================
+    */
+
     logger.info("Creating post", {
       authorId,
       category: category || type || "General",
       contentLength: content?.length || 0,
       groupId,
       inLanding,
+      isHidden,
     });
 
     const newPost = await Post.create({
       category: category || type || "General",
+
       content: content || "",
+
       "author-id": authorId,
+
       "group-id": groupId || null,
+
       "in-landing": inLanding || false,
+
+      "is-hidden": isHidden,
     });
 
     logger.info("Post created successfully", {
       postId: newPost.post_id,
       authorId,
+      moderationResult,
+      isHidden,
     });
 
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
@@ -218,6 +260,7 @@ const createPost = async (req, res) => {
         }));
 
         await PostImage.bulkCreate(imagesData);
+
         logger.info("Images saved to PostImage table", {
           postId: newPost.post_id,
           imagesCount: imagesData.length,
@@ -236,7 +279,13 @@ const createPost = async (req, res) => {
 
     return res.status(201).json({
       status: "success",
-      message: "Post created successfully",
+
+      message: isHidden
+        ? "Post created but hidden due to inappropriate content"
+        : "Post created successfully",
+
+      moderationResult,
+
       post: newPost,
     });
   } catch (error) {
@@ -251,6 +300,196 @@ const createPost = async (req, res) => {
     return res.status(500).json({
       status: "error",
       message: error.message || "Failed to create post",
+    });
+  }
+};
+
+const editPost = async (req, res) => {
+  logger.info("----- [editPost] START -----", {
+    postId: req.params.postId,
+    userId: req.user?.id,
+    userType: req.user?.["user-type"],
+  });
+
+  try {
+    const { postId } = req.params;
+
+    const {
+      category,
+      type,
+      content,
+      link,
+      groupId,
+      inLanding,
+      removeImages,
+    } = req.body;
+
+    logger.info("Editing post", {
+      postId,
+      userId: req.user?.id,
+      hasContent: !!content,
+      contentLength: content?.length || 0,
+      hasCategory: !!category,
+      hasType: !!type,
+      removeImagesCount: removeImages?.length || 0,
+    });
+
+    const post = await Post.findByPk(postId, {
+      include: [{ model: PostImage, attributes: ["image-url"] }],
+    });
+
+    if (!post) {
+      logger.warn("Post not found for editing", { postId });
+
+      return res
+        .status(404)
+        .json({ status: "error", message: "Post not found" });
+    }
+
+    const oldContent = post.content;
+    const oldCategory = post.category;
+
+    const oldImages = post.PostImages.map((img) => img["image-url"]);
+
+    if (category !== undefined) post.category = category;
+
+    if (type !== undefined) post.category = type;
+
+    /*
+      =========================
+      AI MODERATION FOR EDIT
+      =========================
+    */
+
+    if (content !== undefined) {
+      const moderationResult = await moderateContent(content);
+
+      logger.info("AI Moderation Result on Edit", {
+        moderationResult,
+      });
+
+      post.content = content;
+
+      post["is-hidden"] = moderationResult === 0;
+    }
+
+    if (link !== undefined) post.link = link;
+
+    if (groupId !== undefined)
+      post["group-id"] = groupId === null ? null : groupId;
+
+    if (inLanding !== undefined) post["in-landing"] = inLanding;
+
+    await post.save();
+
+    if (
+      removeImages &&
+      Array.isArray(removeImages) &&
+      removeImages.length > 0
+    ) {
+      logger.info("Removing images from post", {
+        postId,
+        imagesToRemove: removeImages,
+      });
+
+      await PostImage.destroy({
+        where: {
+          "post-id": postId,
+          "image-url": removeImages,
+        },
+      });
+    }
+
+    if (req.files && req.files.length > 0) {
+      logger.info("Adding new images to post", {
+        postId,
+        newImagesCount: req.files.length,
+      });
+
+      const uploadedImages = req.files.map((file) => ({
+        "post-id": postId,
+        "image-url": file.path || file.url || file.location,
+      }));
+
+      await PostImage.bulkCreate(uploadedImages);
+    }
+
+    const updatedPost = await Post.findByPk(postId, {
+      include: [{ model: PostImage, attributes: ["image-url"] }],
+    });
+
+    const newContent = updatedPost.content;
+
+    const newCategory = updatedPost.category;
+
+    const newImages = updatedPost.PostImages.map(
+      (img) => img["image-url"]
+    );
+
+    const imagesChanged =
+      JSON.stringify(oldImages) !== JSON.stringify(newImages);
+
+    logger.info("Post updated details", {
+      postId,
+
+      oldContent: oldContent?.substring(0, 100),
+
+      newContent: newContent?.substring(0, 100),
+
+      oldCategory,
+
+      newCategory,
+
+      oldImagesCount: oldImages.length,
+
+      newImagesCount: newImages.length,
+
+      imagesChanged,
+
+      isHidden: updatedPost["is-hidden"],
+    });
+
+    logger.info("----- [editPost] END SUCCESS -----", {
+      postId,
+    });
+
+    return res.status(200).json({
+      status: "success",
+
+      message: updatedPost["is-hidden"]
+        ? "Post updated but hidden due to inappropriate content"
+        : "Post updated successfully",
+
+      data: {
+        postId,
+
+        oldContent,
+
+        newContent,
+
+        oldCategory,
+
+        newCategory,
+
+        oldImages,
+
+        newImages,
+
+        imagesChanged,
+
+        isHidden: updatedPost["is-hidden"],
+      },
+    });
+  } catch (error) {
+    logger.error("----- [editPost] Error", {
+      postId: req.params.postId,
+      error: error.message,
+      stack: error.stack.substring(0, 200),
+    });
+
+    return res.status(500).json({
+      status: "error",
+      message: error.message,
     });
   }
 };
@@ -1606,125 +1845,7 @@ const getMyPosts = async (req, res) => {
   }
 };
 
-const editPost = async (req, res) => {
-  logger.info("----- [editPost] START -----", {
-    postId: req.params.postId,
-    userId: req.user?.id,
-    userType: req.user?.["user-type"],
-  });
 
-  try {
-    const { postId } = req.params;
-    const { category, type, content, link, groupId, inLanding, removeImages } =
-      req.body;
-
-    logger.info("Editing post", {
-      postId,
-      userId: req.user?.id,
-      hasContent: !!content,
-      contentLength: content?.length || 0,
-      hasCategory: !!category,
-      hasType: !!type,
-      removeImagesCount: removeImages?.length || 0,
-    });
-
-    const post = await Post.findByPk(postId, {
-      include: [{ model: PostImage, attributes: ["image-url"] }],
-    });
-
-    if (!post) {
-      logger.warn("Post not found for editing", { postId });
-      return res
-        .status(404)
-        .json({ status: "error", message: "Post not found" });
-    }
-
-    const oldContent = post.content;
-    const oldCategory = post.category;
-    const oldImages = post.PostImages.map((img) => img["image-url"]);
-
-    if (category !== undefined) post.category = category;
-    if (type !== undefined) post.category = type;
-    if (content !== undefined) post.content = content;
-    if (link !== undefined) post.link = link;
-    if (groupId !== undefined)
-      post["group-id"] = groupId === null ? null : groupId;
-    if (inLanding !== undefined) post["in-landing"] = inLanding;
-
-    await post.save();
-
-    if (
-      removeImages &&
-      Array.isArray(removeImages) &&
-      removeImages.length > 0
-    ) {
-      logger.info("Removing images from post", {
-        postId,
-        imagesToRemove: removeImages,
-      });
-      await PostImage.destroy({
-        where: { "post-id": postId, "image-url": removeImages },
-      });
-    }
-
-    if (req.files && req.files.length > 0) {
-      logger.info("Adding new images to post", {
-        postId,
-        newImagesCount: req.files.length,
-      });
-      const uploadedImages = req.files.map((file) => ({
-        "post-id": postId,
-        "image-url": file.path || file.url || file.location,
-      }));
-      await PostImage.bulkCreate(uploadedImages);
-    }
-
-    const updatedPost = await Post.findByPk(postId, {
-      include: [{ model: PostImage, attributes: ["image-url"] }],
-    });
-
-    const newContent = updatedPost.content;
-    const newCategory = updatedPost.category;
-    const newImages = updatedPost.PostImages.map((img) => img["image-url"]);
-    const imagesChanged =
-      JSON.stringify(oldImages) !== JSON.stringify(newImages);
-
-    logger.info("Post updated details", {
-      postId,
-      oldContent: oldContent.substring(0, 100),
-      newContent: newContent.substring(0, 100),
-      oldCategory,
-      newCategory,
-      oldImagesCount: oldImages.length,
-      newImagesCount: newImages.length,
-      imagesChanged,
-    });
-
-    logger.info("----- [editPost] END SUCCESS -----", { postId });
-
-    return res.status(200).json({
-      status: "success",
-      message: "Post updated successfully",
-      data: {
-        postId,
-        oldContent,
-        newContent,
-        oldCategory,
-        newCategory,
-        oldImages,
-        newImages,
-        imagesChanged,
-      },
-    });
-  } catch (error) {
-    logger.error("----- [editPost] Error", {
-      postId: req.params.postId,
-      error: error.message,
-      stack: error.stack.substring(0, 200),
-    });
-    return res.status(500).json({ status: "error", message: error.message });
-  }
-};
 
 const likePost = async (req, res) => {
   logger.info("----- [likePost] START -----", {

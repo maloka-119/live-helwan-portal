@@ -625,43 +625,44 @@ const getDigitalID = async (req, res) => {
     // ============================================
     // 🚀 START - GET DIGITAL ID FUNCTION CALLED
     // ============================================
-    console.log("\n" + "🆔".repeat(50));
+    console.log("\n" + "🆔".repeat(40));
     console.log("🆔 GET DIGITAL ID FUNCTION CALLED at:", new Date().toISOString());
-    console.log("🆔".repeat(50));
+    console.log("🆔".repeat(40));
     
-    // 📍 LOG 1: بداية الطلب
-    console.log("\n📍 [1] REQUEST DETAILS:");
-    console.log(`   - Time: ${new Date().toISOString()}`);
-    console.log(`   - IP: ${req.ip}`);
-    console.log(`   - Headers:`, JSON.stringify(req.headers, null, 2));
-    console.log(`   - Original URL: ${req.originalUrl}`);
-    console.log(`   - Base URL: ${req.baseUrl}`);
-    console.log(`   - Protocol: ${req.protocol}`);
-    console.log(`   - Host: ${req.get('host')}`);
+    // Log request initiation
+    logger.info("Digital ID request initiated", {
+      userId: req.user?.id,
+      userType: req.user?.["user-type"],
+      ip: req.ip,
+      timestamp: new Date().toISOString(),
+    });
 
-    // 📍 LOG 2: User from token
-    console.log("\n📍 [2] USER FROM TOKEN:");
-    console.log(`   - User exists: ${req.user ? '✅ YES' : '❌ NO'}`);
-    if (req.user) {
-      console.log(`   - User ID: ${req.user.id}`);
-      console.log(`   - User Type: ${req.user["user-type"]}`);
-      console.log(`   - User Email: ${req.user.email}`);
-      console.log(`   - Full user object:`, JSON.stringify(req.user, null, 2));
-    } else {
-      console.log("   ❌ No user in request - authentication failed");
+    console.log("\n📌 [1] USER AUTHENTICATION CHECK:");
+    console.log(`   - User ID from token: ${req.user?.id || 'Not provided'}`);
+    console.log(`   - User Type: ${req.user?.["user-type"] || 'Not provided'}`);
+    console.log(`   - IP Address: ${req.ip}`);
+
+    if (!req.user || !req.user.id) {
+      console.log("   ❌ No user ID in request - authentication failed");
+      
+      logger.warn("Unauthorized digital ID request", {
+        ip: req.ip,
+        timestamp: new Date().toISOString(),
+      });
       return res.status(401).json({
-        status: "fail",
+        status: HttpStatusHelper.FAIL,
         message: "Not authorized or user not found",
         data: null,
+        error: "Missing user authentication",
       });
     }
 
+    console.log("   ✅ User authenticated successfully");
+
     const userId = req.user.id;
     
-    // 📍 LOG 3: البحث عن Graduate
-    console.log("\n📍 [3] FETCHING GRADUATE RECORD:");
+    console.log("\n📌 [2] FETCHING GRADUATE RECORD:");
     console.log(`   - Looking for graduate with ID: ${userId}`);
-    console.log(`   - Query: Graduate.findOne({ where: { graduate_id: ${userId} } })`);
 
     const graduate = await Graduate.findOne({
       where: { graduate_id: userId },
@@ -670,229 +671,203 @@ const getDigitalID = async (req, res) => {
     });
 
     if (!graduate) {
-      console.log(`   ❌ Graduate NOT FOUND for ID: ${userId}`);
+      console.log(`   ❌ Graduate not found for ID: ${userId}`);
+      
+      logger.warn("Graduate not found for digital ID", {
+        userId,
+        ip: req.ip,
+        timestamp: new Date().toISOString(),
+      });
       return res.status(404).json({
-        status: "fail",
+        status: HttpStatusHelper.FAIL,
         message: "Graduate not found",
         data: null,
+        error: `No graduate record found for user ID: ${userId}`,
       });
     }
 
-    console.log(`   ✅ Graduate FOUND:`);
+    console.log("   ✅ Graduate found:");
     console.log(`      - graduate_id: ${graduate.graduate_id}`);
     console.log(`      - faculty_code: ${graduate.faculty_code || 'null'}`);
-    console.log(`      - graduation_year: ${graduate["graduation-year"] || 'null'}`);
+    console.log(`      - graduation-year: ${graduate["graduation-year"] || 'null'}`);
     console.log(`      - skills: ${graduate.skills || 'null'}`);
-    console.log(`      - profile_picture: ${graduate["profile-picture-url"] || 'null'}`);
-    console.log(`      - Full graduate object:`, JSON.stringify(graduate, null, 2));
+    console.log(`      - has profile picture: ${!!graduate["profile-picture-url"]}`);
 
     const user = graduate.User;
     if (!user) {
-      console.log(`   ❌ User NOT FOUND for graduate ID: ${graduate.graduate_id}`);
+      console.log(`   ❌ User not found for graduate ID: ${graduate.graduate_id}`);
+      
+      logger.error("User not found for graduate in digital ID", {
+        graduateId: graduate.graduate_id,
+        userId,
+        ip: req.ip,
+        timestamp: new Date().toISOString(),
+      });
       return res.status(404).json({
-        status: "fail",
-        message: "User details not found",
+        status: HttpStatusHelper.FAIL,
+        message: "User details not found for this graduate",
         data: null,
+        error: `User record not found for graduate ID: ${graduate.graduate_id}`,
       });
     }
 
-    console.log(`   ✅ User FOUND:`);
+    console.log("   ✅ User found:");
     console.log(`      - User ID: ${user.id}`);
     console.log(`      - First name: ${user["first-name"]}`);
     console.log(`      - Last name: ${user["last-name"]}`);
     console.log(`      - Email: ${user.email}`);
-    console.log(`      - Has national-id: ${!!user["national-id"]}`);
 
-    // 📍 LOG 4: فك تشفير الرقم القومي
-    console.log("\n📍 [4] DECRYPTING NATIONAL ID:");
+    // Decrypt national ID
+    console.log("\n📌 [3] DECRYPTING NATIONAL ID:");
     
     let nationalIdToUse = null;
     if (user["national-id"]) {
-      console.log(`   - Encrypted national ID (first 20 chars): ${user["national-id"].substring(0, 20)}...`);
-      console.log(`   - Encrypted length: ${user["national-id"].length}`);
+      console.log(`   - Encrypted national ID: ${user["national-id"].substring(0, 10)}...`);
       
       const decrypted = aes.decryptNationalId(user["national-id"]);
       if (decrypted) {
         nationalIdToUse = decrypted;
-        console.log(`   ✅ Decrypted successfully: ${nationalIdToUse.substring(0, 6)}**** (length: ${nationalIdToUse.length})`);
-        console.log(`   - Full decrypted (masked): ${nationalIdToUse.replace(/.(?=.{4})/g, '*')}`);
+        console.log(`   - ✅ Decrypted national ID: ${nationalIdToUse.substring(0, 6)}****`);
       } else {
-        console.log(`   ❌ Decryption FAILED, trying raw value`);
+        console.log(`   - ⚠️ Decryption failed, trying raw value`);
         const nationalIdStr = String(user["national-id"]).trim();
-        console.log(`   - Raw string value: ${nationalIdStr}`);
-        console.log(`   - Is 14 digits? ${/^\d{14}$/.test(nationalIdStr) ? 'YES' : 'NO'}`);
-        
         if (/^\d{14}$/.test(nationalIdStr)) {
           nationalIdToUse = nationalIdStr;
-          console.log(`   ✅ Using raw national ID: ${nationalIdToUse.substring(0, 6)}****`);
+          console.log(`   - ✅ Using raw national ID: ${nationalIdToUse.substring(0, 6)}****`);
         } else {
-          console.log(`   ❌ Could NOT validate national ID`);
+          console.log(`   - ❌ Could not decrypt or validate national ID`);
         }
       }
     } else {
-      console.log(`   ❌ No national ID found for user`);
+      console.log(`   - ❌ No national ID found for user`);
     }
 
     if (!nationalIdToUse) {
-      console.log(`   ❌ NO VALID NATIONAL ID AVAILABLE`);
+      console.log(`   ❌ No valid national ID available`);
+      
+      logger.error("National ID decryption failed for digital ID", {
+        userId,
+        ip: req.ip,
+        timestamp: new Date().toISOString(),
+      });
       return res.status(400).json({
-        status: "error",
+        status: HttpStatusHelper.ERROR,
         message: "National ID not found or could not be decrypted",
         data: null,
       });
     }
 
-    // 📍 LOG 5: التحضير لاستدعاء API الخارجي
-    console.log("\n📍 [5] PREPARING EXTERNAL API CALL:");
-    console.log(`   - National ID to use: ${nationalIdToUse.substring(0, 6)}****`);
-    console.log(`   - GRADUATE_API_URL from env: ${process.env.GRADUATE_API_URL || 'NOT SET'}`);
+    // Fetch external data
+    console.log("\n📌 [4] FETCHING EXTERNAL DATA:");
+    console.log(`   - National ID: ${nationalIdToUse.substring(0, 6)}****`);
     
     let externalData = null;
     let externalError = null;
     
     try {
       if (!process.env.GRADUATE_API_URL) {
-        console.log(`   ❌ GRADUATE_API_URL is NOT configured`);
+        console.log(`   - ❌ GRADUATE_API_URL not configured`);
         throw new Error("GRADUATE_API_URL is not configured");
       }
 
-      // ✅ استخدام endpoint details
+      // ✅ Use the correct API endpoint
       const apiUrl = `${process.env.GRADUATE_API_URL}/details/${nationalIdToUse}`;
-      console.log(`   📞 Calling external API:`);
-      console.log(`      - Full URL: ${apiUrl}`);
-      console.log(`      - Timeout: 5000ms`);
-      console.log(`      - Headers: ${JSON.stringify({ Accept: "application/json" })}`);
-
-      const startTime = Date.now();
-      console.log(`   - Call started at: ${new Date(startTime).toISOString()}`);
+      console.log(`   - Calling API: ${apiUrl}`);
+      
+      logger.debug("Calling external API for digital ID", {
+        url: apiUrl,
+        userId,
+        timestamp: new Date().toISOString(),
+      });
 
       const response = await axios.get(apiUrl, {
         timeout: 5000,
         headers: { Accept: "application/json" },
       });
 
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-
-      console.log(`   ✅ API CALL COMPLETED:`);
-      console.log(`      - Duration: ${duration}ms`);
-      console.log(`      - Status: ${response.status}`);
-      console.log(`      - Status Text: ${response.statusText}`);
-      console.log(`      - Response Headers:`, JSON.stringify(response.headers, null, 2));
+      console.log(`   - Response status: ${response.status}`);
       
       if (response.status === 200 && response.data) {
         externalData = response.data;
-        console.log(`   ✅ EXTERNAL DATA RECEIVED:`);
-        console.log(`      - Data type: ${typeof externalData}`);
-        console.log(`      - Is Array? ${Array.isArray(externalData)}`);
-        console.log(`      - Full response data:`, JSON.stringify(externalData, null, 2));
-        console.log(`      - Extracted fields:`);
-        console.log(`         • fullName: ${externalData.fullName || 'N/A'}`);
-        console.log(`         • faculty: ${externalData.faculty || 'N/A'}`);
-        console.log(`         • department: ${externalData.department || 'N/A'}`);
-        console.log(`         • graduationYear: ${externalData.graduationYear || 'N/A'}`);
+        console.log(`   - ✅ External data received:`);
+        console.log(`      - fullName: ${externalData.fullName || 'N/A'}`);
+        console.log(`      - faculty: ${externalData.faculty || 'N/A'}`);
+        console.log(`      - department: ${externalData.department || 'N/A'}`);
+        console.log(`      - graduationYear: ${externalData.graduationYear || 'N/A'}`);
+        
+        logger.debug("External data received for digital ID", {
+          userId,
+          hasData: !!externalData,
+          timestamp: new Date().toISOString(),
+        });
       } else {
-        console.log(`   ⚠️ API returned non-200 status: ${response.status}`);
         externalError = new Error(`API returned status ${response.status}`);
+        externalError.code = "API_ERROR";
+        externalError.status = response.status;
+        console.log(`   - ❌ API returned non-200 status: ${response.status}`);
       }
     } catch (error) {
-      console.log(`   ❌ EXTERNAL API CALL FAILED:`);
-      console.log(`      - Error name: ${error.name}`);
+      externalError = error;
+      console.log(`   - ❌ Failed to fetch external data:`);
       console.log(`      - Error message: ${error.message}`);
       console.log(`      - Error code: ${error.code || 'N/A'}`);
-      console.log(`      - Error stack: ${error.stack}`);
       
       if (error.response) {
         console.log(`      - Response status: ${error.response.status}`);
-        console.log(`      - Response data:`, JSON.stringify(error.response.data, null, 2));
-        console.log(`      - Response headers:`, JSON.stringify(error.response.headers, null, 2));
-      } else if (error.request) {
-        console.log(`      - Request was made but no response received`);
-        console.log(`      - Request details:`, JSON.stringify(error.request, null, 2));
-      } else {
-        console.log(`      - Error in setting up request`);
+        console.log(`      - Response data:`, error.response.data);
       }
       
-      externalError = error;
+      logger.error("Failed to fetch external data for digital ID", {
+        userId,
+        error: error.message,
+        code: error.code,
+        timestamp: new Date().toISOString(),
+      });
     }
 
-    // 📍 LOG 6: تحديد البيانات المستخدمة
-    console.log("\n📍 [6] DATA SOURCE DECISION:");
-    if (externalError || !externalData) {
-      console.log(`   ⚠️ USING LOCAL DATA AS FALLBACK`);
-      console.log(`   - Reason: ${externalError ? externalError.message : 'No external data'}`);
-    } else {
-      console.log(`   ✅ USING EXTERNAL DATA`);
-    }
-
-    // 📍 LOG 7: تجهيز الاسم الكامل
-    console.log("\n📍 [7] BUILDING FULL NAME:");
-    let fullName;
-    if (externalData?.fullName) {
-      fullName = externalData.fullName;
-      console.log(`   - Using external fullName: "${fullName}"`);
-    } else if (externalData?.["first-name"] && externalData?.["last-name"]) {
-      fullName = `${externalData["first-name"]} ${externalData["last-name"]}`.trim();
-      console.log(`   - Building from external first/last: "${fullName}"`);
-    } else {
-      fullName = `${user["first-name"] || ""} ${user["last-name"] || ""}`.trim();
-      console.log(`   - Using local names: "${fullName}"`);
-      console.log(`      • First name from DB: "${user["first-name"]}"`);
-      console.log(`      • Last name from DB: "${user["last-name"]}"`);
-    }
-
-    // 📍 LOG 8: تجهيز الكلية
-    console.log("\n📍 [8] BUILDING FACULTY:");
-    const lang = req.headers["accept-language"] || req.user.language || "ar";
-    console.log(`   - Language: ${lang}`);
-    
-    let facultyName;
-    if (externalData?.faculty) {
-      facultyName = externalData.faculty;
-      console.log(`   - Using external faculty: "${facultyName}"`);
-    } else {
-      console.log(`   - Using local faculty_code: "${graduate.faculty_code}"`);
-      facultyName = getCollegeNameByCode(graduate.faculty_code, lang);
-      console.log(`   - Converted to name: "${facultyName}"`);
-    }
-
-    // 📍 LOG 9: تجهيز القسم وسنة التخرج
-    console.log("\n📍 [9] BUILDING DEPARTMENT & YEAR:");
-    const department = externalData?.department || graduate.skills || null;
-    const graduationYear = externalData?.graduationYear || graduate["graduation-year"];
-    
-    console.log(`   - Department: ${department || 'N/A'}`);
-    console.log(`   - Graduation Year: ${graduationYear || 'N/A'}`);
-
-    // 📍 LOG 10: إنشاء QR Code
-    console.log("\n📍 [10] GENERATING QR CODE:");
+    // ============================================
+    // ✅ [5] GENERATE QR CODE WITH CORRECT URL
+    // ============================================
+    console.log("\n📌 [5] GENERATING QR CODE:");
     
     const qrToken = generateQRToken(userId);
-    console.log(`   - User ID for token: ${userId}`);
-    console.log(`   - Token generated: ${qrToken}`);
-    console.log(`   - Token length: ${qrToken.length}`);
-
     const backendUrl = process.env.BACKEND_URL || "http://localhost:5005";
-    console.log(`   - BACKEND_URL from env: ${process.env.BACKEND_URL || 'NOT SET'}`);
-    console.log(`   - Using backend URL: ${backendUrl}`);
-
-    // ✅ الرابط الصحيح
+    
+    // ✅ التأكد من الرابط الصحيح
     const verificationUrl = `${backendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
     
-    console.log(`   🔴 VERIFICATION URL GENERATED:`);
-    console.log(`      - Full URL: ${verificationUrl}`);
-    console.log(`      - Base part: ${backendUrl}/alumni-portal/graduates/digital-id/verify/`);
-    console.log(`      - Token part: ${qrToken}`);
-    console.log(`      - URL length: ${verificationUrl.length}`);
+    console.log(`   - User ID: ${userId}`);
+    console.log(`   - Token generated: ${qrToken.substring(0, 20)}...`);
+    console.log(`   - Backend URL from env: ${process.env.BACKEND_URL || 'Not set, using default'}`);
+    console.log(`   - Final backend URL: ${backendUrl}`);
+    console.log(`   - ✅ Verification URL: ${verificationUrl}`);
+    
+    // 🔴 رسالة تحذير واضحة جداً
+    console.log(`\n🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴`);
+    console.log(`🔴                   IMPORTANT NOTICE                      🔴`);
+    console.log(`🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴`);
+    console.log(`🔴 The QR code contains this URL:`);
+    console.log(`🔴 ${verificationUrl}`);
+    console.log(`🔴`);
+    console.log(`🔴 When you click the QR code in the frontend, you are being`);
+    console.log(`🔴 redirected to: http://localhost:80/public-graduate/37`);
+    console.log(`🔴`);
+    console.log(`🔴 This is NOT a backend issue - the backend is sending the`);
+    console.log(`🔴 correct URL. The problem is in the FRONTEND code.`);
+    console.log(`🔴`);
+    console.log(`🔴 To fix this, check these files in your frontend:`);
+    console.log(`🔴 1. Any component that displays the QR code image`);
+    console.log(`🔴 2. Look for onClick handlers on the <img> tag`);
+    console.log(`🔴 3. Look for any JavaScript that modifies anchor tags`);
+    console.log(`🔴 4. Check if there's a global click handler`);
+    console.log(`🔴`);
+    console.log(`🔴 The QR code image should be wrapped in an <a> tag or have`);
+    console.log(`🔴 an onClick that does window.open('${verificationUrl}', '_blank')`);
+    console.log(`🔴 Currently, it's doing window.location = '/public-graduate/37'`);
+    console.log(`🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴\n`);
 
     let qrCodeDataURL;
     try {
-      console.log(`   - Generating QR code with options:`);
-      console.log(`      • errorCorrectionLevel: M`);
-      console.log(`      • type: image/png`);
-      console.log(`      • width: 300`);
-      console.log(`      • margin: 1`);
-
       qrCodeDataURL = await QRCode.toDataURL(verificationUrl, {
         errorCorrectionLevel: "M",
         type: "image/png",
@@ -901,90 +876,150 @@ const getDigitalID = async (req, res) => {
         width: 300,
       });
       
-      console.log(`   ✅ QR Code generated successfully`);
-      console.log(`      - Data URL length: ${qrCodeDataURL.length} characters`);
-      console.log(`      - Data URL preview (first 100 chars): ${qrCodeDataURL.substring(0, 100)}...`);
-      console.log(`      - Data URL is base64? ${qrCodeDataURL.startsWith('data:image/png;base64,') ? 'YES' : 'NO'}`);
+      console.log(`   - ✅ QR Code generated successfully`);
+      console.log(`   - QR Code Data URL length: ${qrCodeDataURL.length} characters`);
       
+      // Log the first 100 chars of the QR code for debugging
+      console.log(`   - QR Code preview: ${qrCodeDataURL.substring(0, 100)}...`);
+      
+      logger.debug("QR code generated successfully", {
+        userId,
+        verificationUrl,
+        timestamp: new Date().toISOString(),
+      });
     } catch (qrError) {
-      console.log(`   ❌ QR Code generation FAILED: ${qrError.message}`);
-      console.log(`      - Error stack: ${qrError.stack}`);
+      console.log(`   - ❌ QR Code generation failed: ${qrError.message}`);
+      
+      logger.error("Error generating QR code", {
+        userId,
+        error: qrError.message,
+        timestamp: new Date().toISOString(),
+      });
       qrCodeDataURL = null;
     }
 
-    // 📍 LOG 11: تجهيز الـ response النهائي
-    console.log("\n📍 [11] BUILDING FINAL RESPONSE:");
+    // If external API fails, use local data as fallback
+    if (externalError || !externalData) {
+      console.log("\n📌 [6] USING LOCAL DATA AS FALLBACK:");
+      console.log(`   - Reason: ${externalError ? externalError.message : 'No external data'}`);
+      
+      logger.warn("Using local data as fallback for digital ID", {
+        userId,
+        error: externalError?.message,
+        timestamp: new Date().toISOString(),
+      });
+
+      const lang = req.headers["accept-language"] || req.user.language || "ar";
+      console.log(`   - Language: ${lang}`);
+      
+      const facultyName = getCollegeNameByCode(graduate.faculty_code, lang);
+      console.log(`   - Faculty name from code: ${facultyName}`);
+
+      // Build digital ID with local data
+      const digitalID = {
+        personalPicture: graduate["profile-picture-url"] || null,
+        fullName: `${user["first-name"] || ""} ${user["last-name"] || ""}`.trim(),
+        faculty: facultyName,
+        department: graduate.skills || null,
+        graduationYear: graduate["graduation-year"],
+        status: "active",
+        nationalId: nationalIdToUse,
+        graduationId: graduate.graduate_id,
+        qr: qrCodeDataURL,
+      };
+
+      console.log("\n📌 [7] DIGITAL ID DATA (LOCAL):");
+      console.log(`   - personalPicture: ${digitalID.personalPicture ? '✅' : '❌'}`);
+      console.log(`   - fullName: ${digitalID.fullName}`);
+      console.log(`   - faculty: ${digitalID.faculty}`);
+      console.log(`   - department: ${digitalID.department}`);
+      console.log(`   - graduationYear: ${digitalID.graduationYear}`);
+      console.log(`   - nationalId: ${digitalID.nationalId.substring(0, 6)}****`);
+      console.log(`   - graduationId: ${digitalID.graduationId}`);
+      console.log(`   - qr: ${digitalID.qr ? '✅' : '❌'}`);
+
+      logger.info("Digital ID retrieved successfully (using local data)", {
+        userId,
+        hasQR: !!digitalID.qr,
+        faculty: facultyName,
+        verificationUrl,
+        timestamp: new Date().toISOString(),
+      });
+
+      console.log("\n" + "🆔".repeat(40) + "\n");
+
+      return res.json({
+        status: HttpStatusHelper.SUCCESS,
+        message: "Graduate Digital ID fetched successfully (using local data)",
+        data: digitalID,
+      });
+    }
+
+    // If we have external data, use it
+    console.log("\n📌 [6] USING EXTERNAL DATA:");
     
+    const lang = req.headers["accept-language"] || req.user.language || "ar";
+    console.log(`   - Language: ${lang}`);
+
+    // Get faculty name from external data
+    let facultyName;
+    if (externalData.faculty) {
+      facultyName = externalData.faculty;
+      console.log(`   - Faculty from external: ${facultyName}`);
+    } else {
+      facultyName = getCollegeNameByCode(graduate.faculty_code, lang);
+      console.log(`   - Faculty from local code: ${facultyName}`);
+    }
+
+    // Get full name from external data
+    let fullName;
+    if (externalData.fullName) {
+      fullName = externalData.fullName;
+      console.log(`   - Full name from external: ${fullName}`);
+    } else if (externalData["first-name"] && externalData["last-name"]) {
+      fullName = `${externalData["first-name"] || ""} ${externalData["last-name"] || ""}`.trim();
+      console.log(`   - Full name from external (first/last): ${fullName}`);
+    } else {
+      fullName = `${user["first-name"] || ""} ${user["last-name"] || ""}`.trim();
+      console.log(`   - Full name from local: ${fullName}`);
+    }
+
+    // Build digital ID data
     const digitalID = {
       personalPicture: graduate["profile-picture-url"] || null,
       fullName: fullName,
       faculty: facultyName,
-      department: department,
-      graduationYear: graduationYear,
-      status: externalData?.status || "active",
+      department: externalData.department || graduate.skills || null,
+      graduationYear: externalData.graduationYear || graduate["graduation-year"],
+      status: externalData.status || "active",
       nationalId: nationalIdToUse,
       graduationId: graduate.graduate_id,
       qr: qrCodeDataURL,
     };
 
-    console.log(`   ✅ DIGITAL ID DATA:`);
-    console.log(`      - personalPicture: ${digitalID.personalPicture ? '✅' : '❌'}`);
-    console.log(`      - fullName: "${digitalID.fullName}"`);
-    console.log(`      - faculty: "${digitalID.faculty}"`);
-    console.log(`      - department: "${digitalID.department}"`);
-    console.log(`      - graduationYear: ${digitalID.graduationYear}`);
-    console.log(`      - nationalId: ${digitalID.nationalId.substring(0, 6)}**** (full length: ${digitalID.nationalId.length})`);
-    console.log(`      - graduationId: ${digitalID.graduationId}`);
-    console.log(`      - qr: ${digitalID.qr ? '✅' : '❌'}`);
-    console.log(`      - qr contains URL: ${digitalID.qr ? verificationUrl : 'N/A'}`);
-
-    // 📍 LOG 12: الـ response اللي هيتبعت
-    console.log("\n📍 [12] SENDING RESPONSE TO FRONTEND:");
-    console.log(`   - Response status: 200`);
-    console.log(`   - Response structure:`);
-    console.log(`      • status: "success"`);
-    console.log(`      • message: "Graduate Digital ID fetched successfully"`);
-    console.log(`      • data: { ... }`);
-    console.log(`   - Full response object:`);
-    console.log(JSON.stringify({
-      status: "success",
-      message: "Graduate Digital ID fetched successfully",
-      data: {
-        ...digitalID,
-        nationalId: digitalID.nationalId.substring(0, 6) + "****",
-        qr: digitalID.qr ? "✅ [QR Code Data URL]" : null
-      }
-    }, null, 2));
-
-    // 📍 LOG 13: تذكير بمشكلة الفرونت اند
-    console.log("\n" + "🔴".repeat(50));
-    console.log("🔴                    FRONTEND ISSUE REMINDER                    🔴");
-    console.log("🔴".repeat(50));
-    console.log(`🔴 VERIFICATION URL SENT: ${verificationUrl}`);
-    console.log(`🔴`);
-    console.log(`🔴 If frontend redirects to: http://localhost:80/public-graduate/${userId}`);
-    console.log(`🔴 Then the problem is DEFINITELY in the FRONTEND code.`);
-    console.log(`🔴`);
-    console.log(`🔴 The backend is doing its job correctly.`);
-    console.log(`🔴 Check these frontend files:`);
-    console.log(`🔴 1. PublicGraduateProfile.jsx (line 17)`);
-    console.log(`🔴 2. Any component that renders the QR code image`);
-    console.log(`🔴 3. Look for onClick handlers or <a> tags`);
-    console.log("🔴".repeat(50) + "\n");
+    console.log("\n📌 [7] DIGITAL ID DATA (EXTERNAL):");
+    console.log(`   - personalPicture: ${digitalID.personalPicture ? '✅' : '❌'}`);
+    console.log(`   - fullName: ${digitalID.fullName}`);
+    console.log(`   - faculty: ${digitalID.faculty}`);
+    console.log(`   - department: ${digitalID.department}`);
+    console.log(`   - graduationYear: ${digitalID.graduationYear}`);
+    console.log(`   - nationalId: ${digitalID.nationalId.substring(0, 6)}****`);
+    console.log(`   - graduationId: ${digitalID.graduationId}`);
+    console.log(`   - qr: ${digitalID.qr ? '✅' : '❌'}`);
 
     logger.info("Digital ID retrieved successfully", {
       userId,
+      hasPersonalPicture: !!digitalID.personalPicture,
       hasQR: !!digitalID.qr,
+      faculty: facultyName,
       verificationUrl,
       timestamp: new Date().toISOString(),
     });
 
-    console.log("\n" + "🆔".repeat(50));
-    console.log("🆔 END - GET DIGITAL ID FUNCTION COMPLETED");
-    console.log("🆔".repeat(50) + "\n");
+    console.log("\n" + "🆔".repeat(40) + "\n");
 
     return res.json({
-      status: "success",
+      status: HttpStatusHelper.SUCCESS,
       message: "Graduate Digital ID fetched successfully",
       data: digitalID,
     });
@@ -993,29 +1028,35 @@ const getDigitalID = async (req, res) => {
     // ============================================
     // ❌ ERROR HANDLING
     // ============================================
-    console.log("\n" + "❌".repeat(50));
+    console.log("\n❌".repeat(40));
     console.log("❌ ERROR IN GET DIGITAL ID:");
-    console.log("❌".repeat(50));
-    console.log(`❌ Time: ${new Date().toISOString()}`);
-    console.log(`❌ User ID: ${req.user?.id}`);
-    console.log(`❌ Error name: ${err.name}`);
-    console.log(`❌ Error message: ${err.message}`);
-    console.log(`❌ Error stack: ${err.stack}`);
-    console.log(`❌ Full error object:`, err);
-    console.log("❌".repeat(50) + "\n");
+    console.log("❌ Time:", new Date().toISOString());
+    console.log("❌ User ID:", req.user?.id);
+    console.log("❌ Error name:", err.name);
+    console.log("❌ Error message:", err.message);
+    console.log("❌ Error stack:", err.stack);
+    console.log("❌".repeat(40) + "\n");
     
     logger.error("Unexpected error in getDigitalID", {
       userId: req.user?.id,
       error: err.message,
-      stack: err.stack,
+      stack: err.stack?.substring(0, 500),
       ip: req.ip,
       timestamp: new Date().toISOString(),
     });
     
     return res.status(500).json({
-      status: "error",
+      status: HttpStatusHelper.ERROR || "error",
       message: err.message || "Internal server error",
       data: null,
+      error: "An unexpected error occurred while fetching digital ID",
+      details:
+        process.env.NODE_ENV === "development"
+          ? {
+              stack: err.stack,
+              name: err.name,
+            }
+          : undefined,
     });
   }
 };

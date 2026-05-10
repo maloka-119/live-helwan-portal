@@ -9,9 +9,17 @@ const ModerationService = require('../services/moderationService');
 
 class ChatSocketServer {
   constructor(server) {
+    const allowedOrigins = [
+      process.env.CLIENT_URL,
+      process.env.FRONTEND_URL,
+      "https://lms2.capu.edu.eg",
+      "http://lms2.capu.edu.eg",
+      "http://localhost:3000"
+    ].filter(Boolean);
+
     this.io = new Server(server, {
       cors: {
-        origin: process.env.CLIENT_URL || "http://localhost:3000",
+        origin: allowedOrigins,
         methods: ["GET", "POST"],
         credentials: true
       }

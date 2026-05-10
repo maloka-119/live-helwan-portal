@@ -11,7 +11,7 @@ const { getCollegeNameByCode } = require("../services/facultiesService");
 const axios = require("axios"); 
 // Import logger utilities
 const { logger, securityLogger } = require("../utils/logger");
-const aes = require("../utils/aes");
+const aes = require("../utils/aes");// عدل المسار حسب مكان الملف
 /**
  * Send a group invitation
  * @route POST /api/invitations

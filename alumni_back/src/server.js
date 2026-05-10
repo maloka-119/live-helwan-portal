@@ -210,8 +210,10 @@ app.use("/alumni-portal/documents-types", documentTypeRoutes);
 const documentRequestRoutes = require("./routes/documentRequest.route");
 app.use("/alumni-portal/documents", documentRequestRoutes);
 // Serve uploaded files
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-
+app.use(
+  "/alumni-portal/uploads",
+  express.static(path.join(__dirname, "uploads"))
+);
 // Error Handler
 app.use(errorHandler);
 

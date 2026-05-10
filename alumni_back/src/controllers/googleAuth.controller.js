@@ -10,6 +10,9 @@ const validator = require("validator");
 const { Op } = require("sequelize");
 const { logger, securityLogger } = require("../utils/logger");
 const { normalizeCollegeName } = require("../services/facultiesService");
+const FRONTEND_BASE_URL = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/+$/, "");
+const frontendUrl = (path = "/") =>
+  `${FRONTEND_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 
 // ===================== Helper functions =====================
 
@@ -54,6 +57,120 @@ function extractDOBFromEgyptianNID(nationalId) {
     2,
     "0"
   )}-${String(dd).padStart(2, "0")}`;
+}
+
+function extractGraduateApiData(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const candidates = [
+    payload,
+    payload.data,
+    payload.result,
+    payload.student,
+    payload.graduate,
+    payload.payload,
+  ].filter(Boolean);
+
+  for (const item of candidates) {
+    if (
+      item?.faculty ||
+      item?.Faculty ||
+      item?.FACULTY ||
+      item?.facultyName ||
+      item?.graduationYear ||
+      item?.["graduation-year"] ||
+      item?.fullName ||
+      item?.["full-name"] ||
+      item?.department ||
+      item?.Department
+    ) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+function hasGraduatePresence(payload) {
+  if (!payload || typeof payload !== "object") return false;
+
+  const candidates = [
+    payload,
+    payload.data,
+    payload.result,
+    payload.student,
+    payload.graduate,
+    payload.payload,
+  ].filter(Boolean);
+
+  return candidates.some(
+    (item) =>
+      item?.exists === true ||
+      item?.found === true ||
+      item?.isFound === true ||
+      item?.isExists === true ||
+      item?.matched === true
+  );
+}
+
+function buildGraduateApiUrls(nationalId) {
+  const encodedNationalId = encodeURIComponent(nationalId);
+  const baseUrl = (process.env.GRADUATE_API_URL || "").replace(/\/+$/, "");
+  const urls = [];
+
+  if (baseUrl) {
+    urls.push(`${baseUrl}?nationalId=${encodedNationalId}`);
+
+    if (/\/check$/i.test(baseUrl)) {
+      urls.push(
+        `${baseUrl.replace(/\/check$/i, `/details/${encodedNationalId}`)}`
+      );
+    }
+
+    if (/\/graduates\/check$/i.test(baseUrl)) {
+      urls.push(
+        `${baseUrl.replace(
+          /\/graduates\/check$/i,
+          `/details/${encodedNationalId}`
+        )}`
+      );
+      urls.push(
+        `${baseUrl.replace(
+          /\/graduates\/check$/i,
+          `/graduates/details/${encodedNationalId}`
+        )}`
+      );
+    }
+  }
+
+  urls.push(`http://localhost:5155/api/details/${encodedNationalId}`);
+  urls.push(`http://localhost:5155/api/graduates/details/${encodedNationalId}`);
+
+  return [...new Set(urls)];
+}
+
+async function resolveGraduateFromExternalApi(nationalId) {
+  for (const url of buildGraduateApiUrls(nationalId)) {
+    try {
+      const response = await axios.get(url, {
+        timeout: 8000,
+        headers: { Accept: "application/json" },
+      });
+
+      const data = extractGraduateApiData(response.data);
+      if (data) {
+        return { found: true, data };
+      }
+
+      if (hasGraduatePresence(response.data)) {
+        return { found: true, data: response.data || {} };
+      }
+    } catch (error) {
+      // Try the next candidate URL.
+    }
+  }
+
+  return { found: false, data: null };
 }
 
 // ===================== Passport Google Strategy =====================
@@ -138,7 +255,7 @@ exports.loginWithGoogle = (req, res, next) => {
   // Validate National ID if provided
   if (nationalId && !validateNationalId(nationalId)) {
     return res.redirect(
-      `http://localhost:3000/login?error=${encodeURIComponent(
+      `${frontendUrl("/login")}?error=${encodeURIComponent(
         "Invalid National ID"
       )}`
     );
@@ -147,11 +264,26 @@ exports.loginWithGoogle = (req, res, next) => {
   // Store National ID in session for later use
   req.session.nationalId = nationalId || null;
   req.session.save(() => {
-    passport.authenticate("google", { scope: ["profile", "email"] })(
-      req,
-      res,
-      next
-    );
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", process.env.GOOGLE_CALLBACK_URL);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "profile email");
+    authUrl.searchParams.set("state", nationalId || "");
+
+    res.set("Content-Type", "text/html; charset=utf-8");
+    return res.send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="refresh" content="0;url=${authUrl.toString()}" />
+    <title>Redirecting to Google</title>
+  </head>
+  <body>
+    <script>window.location.replace(${JSON.stringify(authUrl.toString())});</script>
+    <p>Redirecting to Google...</p>
+  </body>
+</html>`);
   });
 };
 
@@ -161,6 +293,11 @@ exports.loginWithGoogle = (req, res, next) => {
  * @access Public
  */
 exports.googleCallback = (req, res, next) => {
+  const nationalIdFromState =
+    req.query.state && validateNationalId(req.query.state)
+      ? req.query.state
+      : null;
+
   passport.authenticate(
     "google",
     { session: false },
@@ -169,7 +306,7 @@ exports.googleCallback = (req, res, next) => {
 
       if (err || !googleUser) {
         return res.redirect(
-          `http://localhost:3000/login?error=${encodeURIComponent(
+          `${frontendUrl("/login")}?error=${encodeURIComponent(
             "Google authentication failed"
           )}`
         );
@@ -199,7 +336,7 @@ exports.googleCallback = (req, res, next) => {
               (await Staff.findOne({ where: { staff_id: user.id } }));
             if (staffRecord && staffRecord["status-to-login"] !== "active") {
               return res.redirect(
-                "http://localhost:3000/login?error=" +
+                `${frontendUrl("/login")}?error=` +
                   encodeURIComponent(
                     "Your account is not activated yet. Please wait for admin approval."
                   )
@@ -216,8 +353,55 @@ exports.googleCallback = (req, res, next) => {
               graduateRecord &&
               graduateRecord["status-to-login"] !== "accepted"
             ) {
+              let nationalIdToCheck = null;
+
+              try {
+                nationalIdToCheck = user["national-id"]
+                  ? aes.decryptNationalId(user["national-id"])
+                  : null;
+              } catch (e) {
+                nationalIdToCheck = null;
+              }
+
+              if (nationalIdToCheck && validateNationalId(nationalIdToCheck)) {
+                const externalGraduate = await resolveGraduateFromExternalApi(
+                  nationalIdToCheck
+                );
+
+                if (externalGraduate.found) {
+                  const externalData = externalGraduate.data || {};
+                  const facultyName =
+                    externalData?.faculty ||
+                    externalData?.Faculty ||
+                    externalData?.FACULTY ||
+                    externalData?.facultyName ||
+                    null;
+                  const graduationYear =
+                    externalData?.["graduation-year"] ||
+                    externalData?.graduationYear ||
+                    externalData?.GraduationYear ||
+                    graduateRecord["graduation-year"] ||
+                    null;
+
+                  graduateRecord["status-to-login"] = "accepted";
+                  if (facultyName && !graduateRecord.faculty_code) {
+                    graduateRecord.faculty_code =
+                      normalizeCollegeName(facultyName) || facultyName;
+                  }
+                  if (graduationYear && !graduateRecord["graduation-year"]) {
+                    graduateRecord["graduation-year"] = graduationYear;
+                  }
+
+                  await graduateRecord.save();
+                }
+              }
+            }
+            if (
+              graduateRecord &&
+              graduateRecord["status-to-login"] !== "accepted"
+            ) {
               return res.redirect(
-                "http://localhost:3000/login?error=" +
+                `${frontendUrl("/login")}?error=` +
                   encodeURIComponent(
                     "Your account is under review. Please wait for admin approval to access the dashboard."
                   )
@@ -227,7 +411,7 @@ exports.googleCallback = (req, res, next) => {
 
           // User is fully authorized → generate token and redirect
           const token = generateToken(user.id);
-          const redirectUrl = new URL("http://localhost:3000/login");
+          const redirectUrl = new URL(frontendUrl("/login"));
           redirectUrl.searchParams.set("token", token);
           redirectUrl.searchParams.set("id", user.id);
           redirectUrl.searchParams.set("email", user.email);
@@ -236,7 +420,8 @@ exports.googleCallback = (req, res, next) => {
         }
 
         // ================== 2. New user (first time Google login) ==================
-        const nationalIdFromSession = req.session.nationalId;
+        const nationalIdFromSession =
+          req.session.nationalId || nationalIdFromState;
 
         // If no National ID provided, store temp data and ask for it
         if (
@@ -251,7 +436,7 @@ exports.googleCallback = (req, res, next) => {
             profile_picture_url: googleUser.profile_picture_url,
           };
           req.session.save(() => {
-            return res.redirect("http://localhost:3000/login?require_nid=true");
+            return res.redirect(`${frontendUrl("/login")}?require_nid=true`);
           });
           return;
         }
@@ -286,22 +471,19 @@ exports.googleCallback = (req, res, next) => {
         // 2. If not staff → check Graduate API
         if (!foundInAPI) {
           try {
-            const gradResp = await axios.get(
-              `${process.env.GRADUATE_API_URL}?nationalId=${encodeURIComponent(
-                nationalIdFromSession
-              )}`,
-              { timeout: 8000 }
+            const externalGraduate = await resolveGraduateFromExternalApi(
+              nationalIdFromSession
             );
-            const data = gradResp.data;
+            const data = externalGraduate.data;
             const facultyField =
               data?.faculty ||
               data?.Faculty ||
               data?.FACULTY ||
               data?.facultyName;
 
-            if (facultyField) {
+            if (externalGraduate.found || facultyField) {
               statusToLogin = "accepted"; // Found in graduate API → auto-accept
-              externalData = data;
+              externalData = data || {};
               foundInAPI = true;
             }
             // else → remains "pending"
@@ -362,7 +544,7 @@ exports.googleCallback = (req, res, next) => {
           );
 
           return res.redirect(
-            "http://localhost:3000/login?success=" +
+            `${frontendUrl("/login")}?success=` +
               encodeURIComponent(
                 "Staff account created successfully. Your account is pending admin activation."
               )
@@ -375,7 +557,7 @@ exports.googleCallback = (req, res, next) => {
         if (statusToLogin === "accepted") {
           // Auto-login graduates confirmed by API
           const token = generateToken(newUser.id);
-          const redirectUrl = new URL("http://localhost:3000/login");
+          const redirectUrl = new URL(frontendUrl("/login"));
           redirectUrl.searchParams.set("token", token);
           redirectUrl.searchParams.set("id", newUser.id);
           redirectUrl.searchParams.set("email", newUser.email);
@@ -394,7 +576,7 @@ exports.googleCallback = (req, res, next) => {
           req.session.save();
 
           return res.redirect(
-            "http://localhost:3000/login?success=" +
+            `${frontendUrl("/login")}?success=` +
               encodeURIComponent(
                 "Account created successfully. Your graduation data is under review. You will be able to log in once approved."
               )
@@ -403,7 +585,7 @@ exports.googleCallback = (req, res, next) => {
       } catch (error) {
         console.error("Google OAuth Error:", error);
         return res.redirect(
-          `http://localhost:3000/login?error=${encodeURIComponent(
+          `${frontendUrl("/login")}?error=${encodeURIComponent(
             "Registration failed. Please try again later."
           )}`
         );
@@ -418,7 +600,7 @@ exports.googleCallback = (req, res, next) => {
  * @access Private
  */
 exports.logout = (req, res) => {
-  req.logout(() => res.redirect("http://localhost:3000/"));
+  req.logout(() => res.redirect(frontendUrl("/")));
 };
 
 /**
