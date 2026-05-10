@@ -19,6 +19,7 @@ const { generateQRToken, verifyQRToken } = require("../utils/qrTokenService");
 const QRCode = require("qrcode");
 const aes = require("../utils/aes");
 
+
 // Import logger utilities
 const { logger, securityLogger } = require("../utils/logger");
 
@@ -831,40 +832,13 @@ const getDigitalID = async (req, res) => {
     console.log("\n📌 [5] GENERATING QR CODE:");
     
     const qrToken = generateQRToken(userId);
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5005";
+    const frontendUrl = process.env.FRONTEND_URL || "https://lms2.capu.edu.eg";
     
     // ✅ التأكد من الرابط الصحيح
-    const verificationUrl = `${backendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
+    const verificationUrl = `${frontendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
     
     console.log(`   - User ID: ${userId}`);
-    console.log(`   - Token generated: ${qrToken.substring(0, 20)}...`);
-    console.log(`   - Backend URL from env: ${process.env.BACKEND_URL || 'Not set, using default'}`);
-    console.log(`   - Final backend URL: ${backendUrl}`);
-    console.log(`   - ✅ Verification URL: ${verificationUrl}`);
-    
-    // 🔴 رسالة تحذير واضحة جداً
-    console.log(`\n🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴`);
-    console.log(`🔴                   IMPORTANT NOTICE                      🔴`);
-    console.log(`🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴`);
-    console.log(`🔴 The QR code contains this URL:`);
-    console.log(`🔴 ${verificationUrl}`);
-    console.log(`🔴`);
-    console.log(`🔴 When you click the QR code in the frontend, you are being`);
-    console.log(`🔴 redirected to: http://localhost:80/public-graduate/37`);
-    console.log(`🔴`);
-    console.log(`🔴 This is NOT a backend issue - the backend is sending the`);
-    console.log(`🔴 correct URL. The problem is in the FRONTEND code.`);
-    console.log(`🔴`);
-    console.log(`🔴 To fix this, check these files in your frontend:`);
-    console.log(`🔴 1. Any component that displays the QR code image`);
-    console.log(`🔴 2. Look for onClick handlers on the <img> tag`);
-    console.log(`🔴 3. Look for any JavaScript that modifies anchor tags`);
-    console.log(`🔴 4. Check if there's a global click handler`);
-    console.log(`🔴`);
-    console.log(`🔴 The QR code image should be wrapped in an <a> tag or have`);
-    console.log(`🔴 an onClick that does window.open('${verificationUrl}', '_blank')`);
-    console.log(`🔴 Currently, it's doing window.location = '/public-graduate/37'`);
-    console.log(`🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴\n`);
+    console.log(`   - ✅ QR Code URL: ${verificationUrl}`);
 
     let qrCodeDataURL;
     try {
@@ -1108,21 +1082,11 @@ const generateDigitalIDQR = async (req, res) => {
       });
     }
 
-    // Generate temporary QR token
     const qrToken = generateQRToken(userId);
+    const frontendUrl = process.env.FRONTEND_URL || "https://lms2.capu.edu.eg";
 
-    // Create verification URL
-    const useFrontend =
-      process.env.QR_USE_FRONTEND === "true" && process.env.FRONTEND_URL;
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5005";
-
-    let verificationUrl;
-    if (useFrontend) {
-      const frontendUrl = process.env.FRONTEND_URL;
-      verificationUrl = `${frontendUrl}/digital-id/verify/${qrToken}`;
-    } else {
-      verificationUrl = `${backendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
-    }
+    // رابط التحقق اللي الـ QR هيفتحه
+    const verificationUrl = `${frontendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
 
     // Generate QR code as data URL
     const qrCodeDataURL = await QRCode.toDataURL(verificationUrl, {
@@ -1135,12 +1099,11 @@ const generateDigitalIDQR = async (req, res) => {
 
     // Log successful generation
     logger.info("QR code generated successfully", {
-      userId,
-      useFrontend,
-      verificationUrl: verificationUrl.substring(0, 50) + "...", // Log partial URL
-      ip: req.ip,
-      timestamp: new Date().toISOString(),
-    });
+  userId,
+  verificationUrl: verificationUrl.substring(0, 50) + "...",
+  ip: req.ip,
+  timestamp: new Date().toISOString(),
+});
 
     return res.json({
       status: HttpStatusHelper.SUCCESS,
@@ -1216,6 +1179,20 @@ const verifyDigitalIDQR = async (req, res) => {
 
     const userId = decoded.userId;
 
+    // Check if request is from browser (HTML request) - redirect to frontend
+    const acceptHeader = req.headers.accept || "";
+    if (acceptHeader.includes("text/html") || acceptHeader.includes("*/*")) {
+      const frontendUrl = process.env.FRONTEND_URL || "http://lms2.capu.edu.eg:3000";
+      const redirectUrl = `${frontendUrl}/public-graduate/${userId}`;
+      logger.info("Redirecting HTML request to frontend", {
+        userId,
+        redirectUrl,
+        ip: req.ip,
+        timestamp: new Date().toISOString(),
+      });
+      return res.redirect(redirectUrl);
+    }
+
     // Get graduate and user data
     const graduate = await Graduate.findOne({
       where: { graduate_id: userId },
@@ -1267,30 +1244,30 @@ const verifyDigitalIDQR = async (req, res) => {
       });
     }
 
-    // Fetch student data from external API (REQUIRED - no fallback to local DB)
+    // Fetch student data from external API (with fallback to local DB if external fails)
     const { data: externalData, error: externalError } =
       await fetchStudentDataFromExternal(nationalIdToUse);
 
-    if (externalError || !externalData) {
-      const statusCode = externalError?.status || 500;
-      const errorMessage =
-        externalError?.message ||
-        "Failed to fetch student data from external system";
+    let useExternalData = !externalError && externalData;
+    let dataSource = useExternalData ? "external" : "local";
 
-      // Log external API failure
-      logger.error("External API failed for QR verification", {
+    // Log data source
+    logger.info("Data source for QR verification", {
+      userId,
+      dataSource,
+      externalError: externalError?.message,
+      ip: req.ip,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (externalError && externalError.code !== "NOT_FOUND") {
+      // Log non-404 external errors but continue with local data
+      logger.warn("External API error, falling back to local data", {
         userId,
-        error: errorMessage,
-        errorCode: externalError?.code,
+        error: externalError.message,
+        errorCode: externalError.code,
         ip: req.ip,
         timestamp: new Date().toISOString(),
-      });
-
-      return res.status(statusCode).json({
-        status: HttpStatusHelper.ERROR,
-        message: errorMessage,
-        data: null,
-        errorCode: externalError?.code || "EXTERNAL_API_ERROR",
       });
     }
 
@@ -1299,10 +1276,11 @@ const verifyDigitalIDQR = async (req, res) => {
     // Get faculty name from external data or use local code as fallback for faculty name only
     let facultyName;
     if (
-      externalData.faculty ||
+      externalData &&
+      (externalData.faculty ||
       externalData.Faculty ||
       externalData.FACULTY ||
-      externalData.facultyName
+      externalData.facultyName)
     ) {
       facultyName =
         externalData.faculty ||
@@ -1316,9 +1294,10 @@ const verifyDigitalIDQR = async (req, res) => {
     // Get full name from external data if available, otherwise from User model
     let fullName;
     if (
-      externalData.fullName ||
+      externalData &&
+      (externalData.fullName ||
       externalData["full-name"] ||
-      (externalData["first-name"] && externalData["last-name"])
+      (externalData["first-name"] && externalData["last-name"]))
     ) {
       fullName =
         externalData.fullName ||
@@ -1334,8 +1313,8 @@ const verifyDigitalIDQR = async (req, res) => {
 
     // Generate QR code
     const qrToken = generateQRToken(userId);
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5005";
-    const verificationUrl = `${backendUrl}/alumni-portal/graduates/digital-id/verify/${qrToken}`;
+     const frontendUrl = process.env.FRONTEND_URL || "http://lms2.capu.edu.eg:3000";
+    const verificationUrl = `${frontendUrl}/public-graduate/${graduate.graduate_id}`;
 
     let qrCodeDataURL;
     try {
@@ -1361,26 +1340,30 @@ const verifyDigitalIDQR = async (req, res) => {
     // Decrypt national ID for response
     let decryptedNationalId = nationalIdToUse;
 
-    // Build digital ID data - profile image from local DB, rest from external API
+    // Build digital ID data - profile image from local DB, rest from external API with local fallbacks
     const digitalID = {
       personalPicture: graduate["profile-picture-url"] || null,
       fullName: fullName,
       faculty: facultyName,
-      department:
+      department: useExternalData ? (
         externalData.department ||
         externalData.Department ||
         externalData.DEPARTMENT ||
-        null,
-      graduationYear:
+        null
+      ) : null,
+      graduationYear: useExternalData ? (
         externalData["graduation-year"] ||
         externalData.graduationYear ||
         externalData.GraduationYear ||
-        null,
-      status: externalData.status || externalData.Status || "active",
+        null
+      ) : graduate.graduation_year || null,
+      status: useExternalData ? (
+        externalData.status || externalData.Status || "active"
+      ) : "active",
       nationalId: decryptedNationalId,
       graduationId: graduate.graduate_id,
       qr: qrCodeDataURL,
-      ...sanitizeDigitalIDData(externalData),
+      ...(useExternalData ? sanitizeDigitalIDData(externalData) : {}),
     };
 
     // Ensure no duplicate IDs are included

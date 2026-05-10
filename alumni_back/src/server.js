@@ -27,7 +27,7 @@ const {
   validateContentType,
 } = require("./middleware/security");
 const app = express();
-
+app.set("trust proxy", 1);
 // ==================================================
 // 🛡️ Security Middlewares (order IMPORTANT)
 // ==================================================
