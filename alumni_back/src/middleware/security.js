@@ -1,4 +1,4 @@
-const rateLimit = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const helmet = require("helmet");
 const hpp = require("hpp");
 const validator = require("validator");
@@ -6,11 +6,24 @@ const sanitizeHtml = require("sanitize-html");
 const { securityLogger, logger } = require("../utils/logger");
 
 // Rate Limiting
+const normalizeClientIp = (ip) => {
+  if (!ip) return "unknown";
+
+  const firstIp = String(ip).split(",")[0].trim();
+  const ipv4WithPort = firstIp.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+
+  if (ipv4WithPort) return ipv4WithPort[1];
+
+  return firstIp;
+};
+
+const clientIpKeyGenerator = (req) => ipKeyGenerator(normalizeClientIp(req.ip));
 
 // Limits login attempts to prevent brute force attacks
 const authLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 minutes
   max: 4, // Allow maximum 4 failed login attempts
+  keyGenerator: clientIpKeyGenerator,
   message: {
     error: "Too many login attempts, please try again after 5 minutes.",
   },
@@ -32,6 +45,7 @@ const authLimiter = rateLimit({
 const oauthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20, // Allow more requests for OAuth flow
+  keyGenerator: clientIpKeyGenerator,
   message: {
     error: "Too many OAuth requests, please try again after 15 minutes.",
   },
@@ -53,6 +67,7 @@ const oauthLimiter = rateLimit({
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // Time window: 15 minutes
   max: 2000, // Lower for testing
+  keyGenerator: clientIpKeyGenerator,
   skipSuccessfulRequests: false, // Count all requests including reloads
   message: {
     error: "Too many requests from this IP, please try again later.",

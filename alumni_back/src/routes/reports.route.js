@@ -1,12 +1,14 @@
 const express = require("express");
 const { Sequelize } = require("sequelize");
+const { Op } = require("sequelize");
 const Graduate = require("../models/Graduate");
 const Staff = require("../models/Staff");
 const Role = require("../models/Role");
 const StaffRole = require("../models/StaffRole");
+const Permission = require("../models/Permission");
+const RolePermission = require("../models/RolePermission");
 const Post = require("../models/Post");
 const User = require("../models/User");
-const checkStaffPermission = require("../utils/permissionChecker");
 const authMiddleware = require("../middleware/authMiddleware");
 const { getCollegeNameByCode } = require("../services/facultiesService"); // ⬅️ أضف هذا الاستيراد
 
@@ -15,6 +17,35 @@ const router = express.Router();
 // ✳️ ربط العلاقات لو مش معمول قبل كده
 Post.belongsTo(User, { foreignKey: "author-id" });
 User.hasMany(Post, { foreignKey: "author-id" });
+
+const canViewPortalReports = async (staffId) => {
+  const permission = await Permission.findOne({
+    where: { name: "Portal Reports" },
+    attributes: ["id"],
+  });
+
+  if (!permission) return false;
+
+  const staffRoles = await StaffRole.findAll({
+    where: { staff_id: staffId },
+    attributes: ["role_id"],
+    raw: true,
+  });
+
+  const roleIds = staffRoles.map((staffRole) => staffRole.role_id);
+  if (roleIds.length === 0) return false;
+
+  const rolePermission = await RolePermission.findOne({
+    where: {
+      role_id: { [Op.in]: roleIds },
+      permission_id: permission.id,
+      "can-view": true,
+    },
+    attributes: ["role_id"],
+  });
+
+  return Boolean(rolePermission);
+};
 
 // ⬅️ أضف authMiddleware.protect هنا
 router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
@@ -32,11 +63,7 @@ router.get("/reports-stats", authMiddleware.protect, async (req, res) => {
     }
 
     if (user["user-type"] === "staff") {
-      const hasPermission = await checkStaffPermission(
-        user.id,
-        "Portal Reports",
-        "view"
-      );
+      const hasPermission = await canViewPortalReports(user.id);
 
       if (!hasPermission) {
         return res.status(403).json({
