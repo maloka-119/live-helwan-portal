@@ -144,8 +144,8 @@ function buildGraduateApiUrls(nationalId) {
     }
   }
 
-  urls.push(`http://localhost:5155/api/details/${encodedNationalId}`);
-  urls.push(`http://localhost:5155/api/graduates/details/${encodedNationalId}`);
+ urls.push(`http://localhost:5155/grad-portal/api/details/${encodedNationalId}`);
+urls.push(`http://localhost:5155/grad-portal/api/graduates/details/${encodedNationalId}`);
 
   return [...new Set(urls)];
 }

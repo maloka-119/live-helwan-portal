@@ -88,7 +88,6 @@ const viewSuggestions = async (req, res) => {
  */
 const sendRequest = async (req, res) => {
   try {
-    // Log request initiation
     logger.info("Send friend request initiated", {
       userId: req.user?.id,
       receiverId: req.params.receiverId,
@@ -103,7 +102,6 @@ const sendRequest = async (req, res) => {
       where: { graduate_id: req.user.id },
     });
     if (!graduate) {
-      // Log missing graduate profile
       logger.warn("No graduate profile found for user", {
         userId: req.user.id,
         ip: req.ip,
@@ -116,7 +114,6 @@ const sendRequest = async (req, res) => {
     const { receiverId } = req.params;
 
     if (senderId == receiverId) {
-      // Log security event for self-friending attempt
       securityLogger.warn("User attempted to add themselves as friend", {
         userId: senderId,
         ip: req.ip,
@@ -135,7 +132,6 @@ const sendRequest = async (req, res) => {
     });
 
     if (existing) {
-      // Log existing request
       logger.warn("Friend request already exists", {
         senderId,
         receiverId,
@@ -157,11 +153,9 @@ const sendRequest = async (req, res) => {
       include: [{ model: User, attributes: ["first-name", "last-name"] }],
     });
 
-    // Create notification for the receiver
     await notifyUserAdded(receiverId, senderId);
 
-    // Emit live socket event
-    if (global.chatSocket) {
+    if (global.chatSocket && typeof global.chatSocket.emitFriendRequest === "function") {
       const senderGraduate = await Graduate.findOne({
         where: { graduate_id: senderId },
         include: [{ model: User, attributes: ["first-name", "last-name"] }],
@@ -180,7 +174,6 @@ const sendRequest = async (req, res) => {
       receiverFullName: `${receiverGraduate.User["first-name"]} ${receiverGraduate.User["last-name"]}`,
     });
   } catch (err) {
-    // Log error
     logger.error("Error sending friend request", {
       userId: req.user?.id,
       receiverId: req.params.receiverId,
@@ -245,7 +238,7 @@ const cancelRequest = async (req, res) => {
       });
 
       // Emit live socket event
-      if (global.chatSocket) {
+      if (global.chatSocket && typeof global.chatSocket.emitFriendRequestCancelled === "function") {
         global.chatSocket.emitFriendRequestCancelled(receiverId, senderId);
       }
     } else {
@@ -414,7 +407,7 @@ const confirmRequest = async (req, res) => {
     await notifyRequestAccepted(senderId, receiverId);
 
     // Emit live socket event to the sender
-    if (global.chatSocket) {
+   if (global.chatSocket && typeof global.chatSocket.emitFriendRequestAccepted === "function") {
       const receiverUser = await User.findByPk(receiverId);
       const receiverGrad = await Graduate.findByPk(receiverId);
       
@@ -650,7 +643,7 @@ const deleteFriend = async (req, res) => {
       });
 
       // Emit live socket event
-      if (global.chatSocket) {
+      if (global.chatSocket && typeof global.chatSocket.emitUnfriend === "function") {
         global.chatSocket.emitUnfriend(friendId, userId);
       }
     } else {
