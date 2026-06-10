@@ -14,7 +14,9 @@ app.use(
     origin: [
       "http://localhost:3000", // localhost
       "http://10.100.104.148:3000", // server private ip
-      "http://172.1.50.88:3000", // server private ip
+      "http://172.1.50.88:3000",
+      "https://lms2.capu.edu.eg", 
+      // server private ip
     ],
     credentials: true,
   })
@@ -34,10 +36,10 @@ app.get("/health", (req, res) => {
 
 // Routes
 console.log("📌 Mounting /auth routes");
-app.use("/auth", authRoutes);
+app.use("/grad-portal/auth", authRoutes);
 
 console.log("📌 Mounting /api routes");
-app.use("/api", graduateRoutes);
+app.use("/grad-portal/api", graduateRoutes);
 
 // ✅ Log all requests (بعد الـ routes عشان نشوف إيه اللي بيوصل)
 app.use((req, res, next) => {
