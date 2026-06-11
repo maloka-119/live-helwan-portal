@@ -26,6 +26,9 @@ const createNotification = async ({ receiverId, senderId, type, message, navigat
       navigation,
       isRead: false
     });
+    if (global.chatSocket && receiverId) {
+  global.chatSocket.io.to(`user_${receiverId}`).emit('new_notification', notification);
+}
 
     return notification;
   } catch (error) {

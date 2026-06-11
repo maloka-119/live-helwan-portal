@@ -417,7 +417,6 @@ const loginUser = asyncHandler(async (req, res) => {
     return res.status(401).json({ error: "Invalid email or password" });
   }
 
-  // OAuth-only check
   if (!user["hashed-password"]) {
     const authProvider = user["auth_provider"] || "OAuth";
     return res.status(401).json({
@@ -427,202 +426,86 @@ const loginUser = asyncHandler(async (req, res) => {
     });
   }
 
-  // Password check
   const validPass = await bcrypt.compare(password, user["hashed-password"]);
   if (!validPass) {
     return res.status(401).json({ error: "Invalid email or password" });
   }
 
-  // ============================================
-  // 🔄 SYNC GRADUATE DATA FROM EXTERNAL SYSTEM ON LOGIN
-  // ============================================
-  console.log("\n🔄 CHECKING GRADUATE DATA ON LOGIN:");
-  console.log(`   - User ID: ${user.id}`);
-  console.log(`   - User Type: ${user["user-type"]}`);
-  console.log(`   - Email: ${user.email}`);
-
-  let dataUpdated = false; // متغير لنتتبع إذا حصل تحديث للبيانات
+  let dataUpdated = false;
   let graduate = null;
 
   if (user["user-type"] === "graduate") {
-    // جلب الـ graduate record
     graduate = await Graduate.findOne({
       where: { graduate_id: user.id },
     });
 
     if (graduate) {
-      console.log("   - ✅ Graduate record found");
-      console.log(
-        `      - Current faculty_code: ${graduate.faculty_code || "missing"}`
-      );
-      console.log(
-        `      - Current graduation-year: ${
-          graduate["graduation-year"] || "missing"
-        }`
-      );
-      console.log(`      - Current skills: ${graduate.skills || "missing"}`);
-
-      // لو الفاكولتي أو سنة التخرج ناقصة
       if (
         !graduate.faculty_code ||
         !graduate["graduation-year"] ||
         graduate["status-to-login"] !== "accepted"
       ) {
-        console.log(
-          "   - ⚠️ Missing faculty or graduation year, fetching from external system..."
-        );
-
-        // فك تشفير الرقم القومي
         let nationalId = null;
         if (user["national-id"]) {
-          // محاولة فك التشفير
           const decrypted = aes.decryptNationalId(user["national-id"]);
           if (decrypted) {
             nationalId = decrypted;
-            console.log(
-              "   - ✅ Decrypted national ID:",
-              nationalId.substring(0, 6) + "****"
-            );
           } else {
-            // لو فك التشفير فشل، جرب استخدام القيمة كـ plain text لو كانت 14 رقم
             const rawNid = String(user["national-id"]).trim();
             if (/^\d{14}$/.test(rawNid)) {
               nationalId = rawNid;
-              console.log(
-                "   - Using raw national ID (unencrypted):",
-                nationalId.substring(0, 6) + "****"
-              );
-            } else {
-              console.log(
-                "   - ❌ Could not decrypt national ID and raw value is not valid"
-              );
             }
           }
-        } else {
-          console.log("   - ❌ No national ID found for user");
         }
 
         if (nationalId) {
           try {
-            // ✅ التعديل هنا: غيرنا الرابط
-            const externalGraduate = await resolveGraduateFromExternalApi(
-              nationalId
-            );
+            const externalGraduate = await resolveGraduateFromExternalApi(nationalId);
 
             if (externalGraduate.found && externalGraduate.data) {
               const externalData = externalGraduate.data;
-              console.log("   - ✅ External data received:");
-              console.log(`      - Full Name: ${externalData.fullName}`);
-              console.log(`      - Faculty: ${externalData.faculty}`);
-              console.log(`      - Department: ${externalData.department}`);
-              console.log(
-                `      - Graduation Year: ${externalData.graduationYear}`
-              );
-
               let updated = false;
 
-              // تحديث faculty_code
               if (externalData.faculty && !graduate.faculty_code) {
                 const facultyCode = normalizeCollegeName(externalData.faculty);
-                if (facultyCode) {
-                  graduate.faculty_code = facultyCode;
-                  console.log(
-                    `      - ✅ Updated faculty_code to: ${facultyCode}`
-                  );
-                  updated = true;
-                } else {
-                  console.log(
-                    `      - ⚠️ Could not normalize faculty: ${externalData.faculty}`
-                  );
-                  // If normalization fails, store the original
-                  graduate.faculty_code = externalData.faculty;
-                  updated = true;
-                }
+                graduate.faculty_code = facultyCode || externalData.faculty;
+                updated = true;
               }
 
-              // تحديث سنة التخرج
               if (externalData.graduationYear && !graduate["graduation-year"]) {
                 const year = parseInt(externalData.graduationYear);
                 if (!isNaN(year) && year > 1900 && year < 2100) {
                   graduate["graduation-year"] = year;
-                  console.log(`      - ✅ Updated graduation year to: ${year}`);
                   updated = true;
-                } else {
-                  console.log(
-                    `      - ⚠️ Invalid graduation year: ${externalData.graduationYear}`
-                  );
                 }
               }
 
-              // تحديث skills من department لو skills فاضية
               if (externalData.department && !graduate.skills) {
                 graduate.skills = externalData.department;
-                console.log(
-                  `      - ✅ Updated skills/department to: ${externalData.department}`
-                );
                 updated = true;
               }
 
               if (graduate["status-to-login"] !== "accepted") {
                 graduate["status-to-login"] = "accepted";
-                console.log("      - âœ… Updated status-to-login to accepted");
                 updated = true;
               }
 
               if (updated) {
                 await graduate.save();
-                console.log(
-                  "   - ✅ Graduate data synced and saved successfully"
-                );
-                dataUpdated = true; // ✅ تم تحديث البيانات
-              } else {
-                console.log("   - No updates needed");
+                dataUpdated = true;
               }
             }
           } catch (error) {
-            console.log("   - ❌ Failed to fetch external data:");
-            console.log(`      - Error message: ${error.message}`);
-            console.log(`      - Error code: ${error.code || "N/A"}`);
-
-            if (error.response) {
-              console.log(`      - Response status: ${error.response.status}`);
-              console.log(`      - Response data:`, error.response.data);
-            } else if (error.code === "ECONNREFUSED") {
-              console.log(
-                "      - ⚠️ External system (port 5155) is not running or refused connection"
-              );
-            } else if (error.code === "ETIMEDOUT") {
-              console.log("      - ⚠️ External system request timed out");
-            }
-
-            console.log("⚠️ Failed to sync graduate data on login:", {
+            console.error("Failed to sync graduate data on login:", {
               userId: user.id,
-              email: user.email,
               error: error.message,
-              code: error.code,
-              ip: req.ip,
             });
           }
-        } else {
-          console.log(
-            "   - ⚠️ No valid national ID available for external sync"
-          );
         }
-      } else {
-        console.log("   - ✅ Graduate data already complete");
       }
-    } else {
-      console.log("   - ❌ Graduate record not found for user ID:", user.id);
     }
-  } else {
-    console.log(
-      `   - User is not a graduate (type: ${user["user-type"]}), skipping sync`
-    );
   }
 
-  // ============================================
-  // ✅ DETERMINE USER STATUS
-  // ============================================
   let status = null;
 
   if (user["user-type"] === "graduate") {
@@ -662,47 +545,17 @@ const loginUser = asyncHandler(async (req, res) => {
     }
   }
 
-  // ============================================
-  // 📨 AUTO INVITATION AFTER LOGIN (إذا تم تحديث البيانات)
-  // ============================================
-  // نقوم بإرسال الدعوة قبل إرسال الـ response
-  if (user["user-type"] === "graduate" && dataUpdated && graduate) {
-    console.log("\n📨 Sending auto invitation during login (data was updated)...");
-    
+  if (user["user-type"] === "graduate" && status === "accepted" && graduate) {
     try {
-      // استدعاء دالة الإرسال الآلي مباشرة بدون setTimeout
       const { sendAutoGroupInvitation } = require("./invitation.controller");
-      const invitationSent = await sendAutoGroupInvitation(user.id);
-      
-      if (invitationSent) {
-        console.log("   - ✅ Auto invitation sent successfully during login");
-        
-        // نجيب أحدث بيانات للـ graduate بعد الدعوة
-        const updatedGrad = await Graduate.findOne({ 
-          where: { graduate_id: user.id } 
-        });
-        
-        // لو عايز تتأكد إن النوتيفيكشن اتبعتت
-        console.log(`   - 📬 Notification should appear now for user ${user.id}`);
-      } else {
-        console.log("   - ⚠️ Auto invitation not sent (already exists or no group)");
-      }
+      await sendAutoGroupInvitation(user.id);
     } catch (error) {
-      console.log("   - ❌ Auto invitation error during login:", error.message);
-      // لا نريد إيقاف عملية اللوجين بسبب هذا
+      console.error("Auto invitation error during login:", error.message);
     }
   }
 
   securityLogger.successfulLogin(req.ip, email, user["user-type"]);
 
-  console.log("✅ Login successful for user:", user.email);
-  console.log(`   - User Type: ${user["user-type"]}`);
-  console.log(`   - Status: ${status}`);
-  if (user["user-type"] === "graduate" && dataUpdated) {
-    console.log(`   - 📬 Notification sent with login response`);
-  }
-
-  // إرسال الـ response بعد انتهاء كل العمليات
   res.json({
     id: user.id,
     email: user.email,

@@ -379,7 +379,7 @@ const rejectGraduate = async (req, res) => {
       const hasPermission = await checkStaffPermission(
         req.user.id,
         "Others Requests management",
-        "edit"
+        "delete"
       );
 
       if (!hasPermission) {
@@ -1442,7 +1442,7 @@ const approveGraduate = async (req, res) => {
       const hasPermission = await checkStaffPermission(
         req.user.id,
         "Others Requests management",
-        "edit"
+        "add"
       );
       if (!hasPermission) {
         // Log permission denied

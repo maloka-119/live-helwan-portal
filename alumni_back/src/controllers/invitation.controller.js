@@ -12,6 +12,7 @@ const axios = require("axios");
 // Import logger utilities
 const { logger, securityLogger } = require("../utils/logger");
 const aes = require("../utils/aes");// عدل المسار حسب مكان الملف
+const SYSTEM_USER_ID = 1;
 /**
  * Send a group invitation
  * @route POST /api/invitations
@@ -547,6 +548,11 @@ const getSentInvitations = async (req, res) => {
  * @param {number} userId - Graduate user ID
  * @returns {Promise<boolean>} Success status
  */
+/**
+ * Auto-send group invitation after graduate registration
+ * @param {number} userId - Graduate user ID
+ * @returns {Promise<boolean>} Success status
+ */
 const sendAutoGroupInvitation = async (userId) => {
   try {
     console.log("\n" + "📨".repeat(30));
@@ -559,27 +565,7 @@ const sendAutoGroupInvitation = async (userId) => {
       timestamp: new Date().toISOString(),
     });
 
-    // 📍 [0] نشوف لو فيه invitation قبل كده
-    console.log("\n📍 [0] CHECKING EXISTING INVITATIONS:");
-    const existingInvitations = await Invitation.findAll({
-      where: {
-        receiver_id: userId,
-        sender_id: 1  // من الادمن
-      }
-    });
-
-    if (existingInvitations.length > 0) {
-      console.log(`   ⚠️ Found ${existingInvitations.length} existing invitations:`);
-      existingInvitations.forEach((inv, idx) => {
-        console.log(`      - Invitation ${idx + 1}: ID=${inv.id}, GroupID=${inv.group_id}, Status=${inv.status}`);
-      });
-      console.log(`   ✅ Already invited before - skipping`);
-      return true;  // أو false حسب المطلوب
-    }
-
-    console.log(`   ✅ No previous invitations found`);
-
-    // 1. Get graduate data
+    // 📍 [1] GET GRADUATE DATA with null safety
     console.log("\n📍 [1] FETCHING GRADUATE DATA:");
     const graduate = await Graduate.findOne({
       where: { graduate_id: userId },
@@ -601,45 +587,37 @@ const sendAutoGroupInvitation = async (userId) => {
     console.log(`      - Faculty Code: ${graduate.faculty_code || 'null'}`);
     console.log(`      - Graduation Year: ${graduate["graduation-year"] || 'null'}`);
 
-    // 📌 لو faculty_code لسه null، نستنى أو نستخدم البيانات من external API
+    // 📍 [2] ENSURE FACULTY CODE
     if (!graduate.faculty_code) {
-      console.log("\n📍 [2] FACULTY CODE IS NULL - CHECKING IF WE SHOULD WAIT");
+      console.log("\n📍 [2] FACULTY CODE IS NULL - TRYING TO FETCH FROM API");
       
-      // نجيب الرقم القومي
-      let nationalId = null;
-      if (graduate.User && graduate.User["national-id"]) {
-        const decrypted = aes.decryptNationalId(graduate.User["national-id"]);
-        if (decrypted) {
-          nationalId = decrypted;
-          console.log(`   - Decrypted national ID: ${nationalId.substring(0, 6)}****`);
-        }
-      }
-
+      const nationalId = graduate.User?.getDataValue("national-id") || graduate.User?.["national-id"];
+      
       if (nationalId) {
-        console.log(`   - Trying to fetch fresh data from external API...`);
-        
         try {
-          // نحاول نجيب البيانات من external API
-          const apiUrl = `${process.env.GRADUATE_API_URL}?nationalId=${nationalId}`;
-          console.log(`   - Calling: ${apiUrl}`);
-          
-          const response = await axios.get(apiUrl, { timeout: 5000 });
-          
-          if (response.data && response.data.faculty) {
-            console.log(`   ✅ Got fresh data from API:`);
-            console.log(`      - Faculty: ${response.data.faculty}`);
-            console.log(`      - Department: ${response.data.department}`);
-            console.log(`      - Graduation Year: ${response.data["graduation-year"]}`);
+          const decrypted = aes.decryptNationalId(nationalId);
+          if (decrypted) {
+            console.log(`   - Decrypted national ID: ${decrypted.substring(0, 6)}****`);
             
-            // تحديث البيانات
-            const facultyCode = normalizeCollegeName(response.data.faculty);
-            if (facultyCode) {
-              graduate.faculty_code = facultyCode;
-              graduate["graduation-year"] = response.data["graduation-year"] || graduate["graduation-year"];
-              graduate.skills = response.data.department || graduate.skills;
+            const apiUrl = `${process.env.GRADUATE_API_URL}?nationalId=${decrypted}`;
+            console.log(`   - Calling: ${apiUrl}`);
+            
+            const response = await axios.get(apiUrl, { timeout: 5000 });
+            
+            if (response.data && response.data.faculty) {
+              console.log("   ✅ Got fresh data from API:");
+              console.log(`      - Faculty: ${response.data.faculty}`);
+              console.log(`      - Department: ${response.data.department}`);
               
-              await graduate.save();
-              console.log(`   ✅ Updated faculty_code to: ${facultyCode}`);
+              const facultyCode = normalizeCollegeName(response.data.faculty);
+              if (facultyCode) {
+                graduate.faculty_code = facultyCode;
+                graduate["graduation-year"] = response.data["graduation-year"] || graduate["graduation-year"];
+                graduate.skills = response.data.department || graduate.skills;
+                
+                await graduate.save();
+                console.log(`   ✅ Updated faculty_code to: ${facultyCode}`);
+              }
             }
           }
         } catch (error) {
@@ -647,10 +625,9 @@ const sendAutoGroupInvitation = async (userId) => {
         }
       }
       
-      // بعد المحاولة، لو لسه null، نوقف
       if (!graduate.faculty_code) {
-        console.log(`   ❌ Faculty code still null after API attempt`);
-        console.log(`   ➡️  No invitation will be sent (waiting for faculty data)`);
+        console.log("   ❌ Faculty code still null after API attempt");
+        console.log("   ➡️ No invitation will be sent (waiting for faculty data)");
         
         logger.info("Faculty code null, skipping auto invitation", {
           userId,
@@ -661,7 +638,7 @@ const sendAutoGroupInvitation = async (userId) => {
       }
     }
 
-    // 2. Find matching group
+    // 📍 [3] FIND MATCHING GROUP
     console.log("\n📍 [3] FINDING MATCHING GROUP:");
     console.log(`   - Using faculty_code: "${graduate.faculty_code}"`);
     console.log(`   - graduationYear: ${graduate["graduation-year"]}`);
@@ -673,7 +650,7 @@ const sendAutoGroupInvitation = async (userId) => {
 
     if (!matchingGroup) {
       console.log("   ❌ NO MATCHING GROUP FOUND");
-      console.log(`   ➡️  No invitation sent (no group for this faculty)`);
+      console.log("   ➡️ No invitation sent (no group for this faculty)");
       
       logger.info("No matching group found for auto invitation", {
         userId,
@@ -687,60 +664,136 @@ const sendAutoGroupInvitation = async (userId) => {
     console.log("   ✅ MATCHING GROUP FOUND:");
     console.log(`      - Group ID: ${matchingGroup.id}`);
     console.log(`      - Group Name: ${matchingGroup["group-name"]}`);
-    console.log(`      - Group Faculty Code: ${matchingGroup.faculty_code || 'null'}`);
-    
-    // اتأكد إن الجروب مش بياخد ناس من كلية تانية
-    if (matchingGroup.faculty_code && matchingGroup.faculty_code !== graduate.faculty_code) {
-      console.log(`   ⚠️ WARNING: Faculty code mismatch!`);
-      console.log(`      - Group belongs to: ${matchingGroup.faculty_code}`);
-      console.log(`      - Graduate belongs to: ${graduate.faculty_code}`);
-      console.log(`   ❌ Will not send invitation to wrong faculty`);
-      return false;
-    }
 
-    // نتأكد تاني (بعد ما لقينا الجروب) إن مفيش invitation قبل كده
-    console.log("\n📍 [4] DOUBLE-CHECKING INVITATIONS:");
-    const finalCheck = await Invitation.findOne({
+    // 📍 [4] USE TRANSACTION FOR ALL CHECKS AND OPERATIONS
+    console.log("\n📍 [4] CHECKING MEMBERSHIP AND INVITATION WITH TRANSACTION:");
+    
+    let invitation = null;
+    let notification = null;
+    let isAlreadyMember = false;
+    let isAlreadyInvited = false;
+    
+    await sequelize.transaction(async (t) => {
+      // Check membership inside transaction (using correct kebab-case)
+      const facultyGroups = await Group.findAll({
+  where: { faculty_code: graduate.faculty_code },
+  attributes: ['id'],
+  transaction: t,
+});
+
+const facultyGroupIds = facultyGroups.map(g => g.id);
+
+const membership = facultyGroupIds.length > 0 
+  ? await GroupMember.findOne({
       where: {
-        sender_id: 1,
-        receiver_id: userId,
-        group_id: matchingGroup.id
+        'user-id': userId,
+        'group-id': facultyGroupIds,
+      },
+      transaction: t,
+    })
+  : null;
+
+      if (membership) {
+        console.log("   ✅ User is already a member of this group");
+        console.log("   ➡️ No invitation needed");
+        isAlreadyMember = true;
+        return;
       }
+
+      // Check existing invitation inside transaction with FOR UPDATE
+      const existingInvite = await Invitation.findOne({
+        where: {
+          sender_id: SYSTEM_USER_ID,
+          receiver_id: userId,
+          group_id: matchingGroup.id,
+        },
+        lock: t.LOCK.UPDATE,
+        transaction: t,
+      });
+
+      if (existingInvite) {
+        console.log(`   ⚠️ Invitation already exists (ID: ${existingInvite.id})`);
+        invitation = existingInvite;
+        isAlreadyInvited = true;
+        return;
+      }
+
+      // Create invitation
+      invitation = await Invitation.create({
+        sender_id: SYSTEM_USER_ID,
+        receiver_id: userId,
+        group_id: matchingGroup.id,
+        status: "pending",
+      }, { transaction: t });
+
+      console.log(`   ✅ Invitation created with ID: ${invitation.id}`);
+
+      // Create notification
+      notification = await Notification.create({
+        receiverId: userId,
+        type: "added_to_group",
+        message: `عزيزي الخريج، لديك دعوة للانضمام لمجموعة ${matchingGroup["group-name"]}`,
+        navigation: {
+          type: "invitation",
+          invitationId: invitation.id,
+          groupId: matchingGroup.id,
+        },
+      }, { transaction: t });
+
+      console.log("   ✅ Notification created");
     });
 
-    if (finalCheck) {
-      console.log(`   ⚠️ Invitation already exists (ID: ${finalCheck.id})`);
-      console.log(`   ✅ Already invited - skipping`);
+    // If already member or invited, return early
+    if (isAlreadyMember || isAlreadyInvited) {
       return true;
     }
 
-    // 3. Create invitation
-    console.log("\n📍 [5] CREATING INVITATION:");
+    // 📍 [5] SEND REAL-TIME NOTIFICATION VIA SOCKET (WITH SAFETY GUARDS)
+    console.log("\n📍 [5] SENDING REAL-TIME NOTIFICATION VIA SOCKET:");
     
-    const invitation = await Invitation.create({
-      sender_id: 1,
-      receiver_id: userId,
-      group_id: matchingGroup.id,
-      status: "pending",
-    });
-
-    console.log(`   ✅ Invitation created with ID: ${invitation.id}`);
-
-    // 4. Create notification
-    console.log("\n📍 [6] CREATING NOTIFICATION:");
+    // Get correct notification ID
+    const notificationId = notification?.notification_id || notification?.id || invitation?.id;
     
-    await Notification.create({
+    const notificationData = {
+      id: notificationId,
       receiverId: userId,
+      senderId: SYSTEM_USER_ID,
       type: "added_to_group",
       message: `عزيزي الخريج، لديك دعوة للانضمام لمجموعة ${matchingGroup["group-name"]}`,
+      isRead: false,
+      createdAt: notification?.createdAt || new Date(),
       navigation: {
         type: "invitation",
         invitationId: invitation.id,
         groupId: matchingGroup.id,
       },
-    });
+      sender: {
+        id: SYSTEM_USER_ID,
+        fullName: "Alumni Portal System",
+        email: "system@alumni.com",
+      },
+    };
 
-    console.log(`   ✅ Notification created`);
+    // SAFE SOCKET EMIT with multiple guards
+    try {
+      if (global.chatSocket && 
+          global.chatSocket.io && 
+          global.chatSocket.connectedUsers &&
+          global.chatSocket.connectedUsers instanceof Map) {
+        
+        const userSocketId = global.chatSocket.connectedUsers.get(userId);
+        if (userSocketId) {
+          global.chatSocket.io.to(`user_${userId}`).emit("new_notification", notificationData);
+          console.log(`   ✅ Real-time notification sent to user ${userId}`);
+        } else {
+          console.log(`   ⚠️ User ${userId} is offline, notification saved in DB only`);
+        }
+      } else {
+        console.log("   ⚠️ Socket not available, notification saved in DB only");
+      }
+    } catch (socketError) {
+      console.error("   ⚠️ Socket emit failed:", socketError.message);
+    }
 
     logger.info("Auto group invitation sent successfully", {
       userId,
@@ -774,29 +827,26 @@ const sendAutoGroupInvitation = async (userId) => {
  */
 const getAutoSentInvitation = async (req, res) => {
   try {
-    // Log request initiation
     logger.info("Get auto-sent invitation request initiated", {
       userId: req.user.id,
       ip: req.ip,
       timestamp: new Date().toISOString(),
     });
 
-    // Get invitation from admin (id=1) to current user
     const invitation = await Invitation.findOne({
       where: {
-        sender_id: 1,
+        sender_id: SYSTEM_USER_ID,
         receiver_id: req.user.id,
       },
       include: [
         {
           model: Group,
-          attributes: ["id", "group-name"], // Add description if needed
+          attributes: ["id", "group-name"],
         },
       ],
     });
 
     if (!invitation) {
-      // Log no invitation found
       logger.debug("No auto-sent invitation found", {
         userId: req.user.id,
         ip: req.ip,
@@ -805,7 +855,6 @@ const getAutoSentInvitation = async (req, res) => {
       return res.json({ invited: false, invitation: null });
     }
 
-    // Log successful retrieval
     logger.info("Auto-sent invitation found", {
       userId: req.user.id,
       invitationId: invitation.id,
@@ -819,7 +868,6 @@ const getAutoSentInvitation = async (req, res) => {
       invitation: invitation,
     });
   } catch (error) {
-    // Log error
     logger.error("Error fetching auto-sent invitation", {
       userId: req.user?.id,
       error: error.message,
